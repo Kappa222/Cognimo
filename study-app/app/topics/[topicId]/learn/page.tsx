@@ -5,12 +5,11 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "../../../../lib/supabase";
 import { useSessionPhaseManager } from "../../../lib/useSessionPhaseManager";
-import type { Topic, QuizQuestionData, ChatSession, ChatMessage, Island } from "../../../lib/types";
+import type { Topic, ChatSession, ChatMessage, Island, EvaluateResult } from "../../../lib/types";
 import ProgressBar from "../../../components/ProgressBar";
 import AIBubble from "../../../components/AIBubble";
 import UserBubble from "../../../components/UserBubble";
 import ResponseInput from "../../../components/ResponseInput";
-import QuizQuestion from "../../../components/QuizQuestion";
 import CompletionScreen from "../../../components/CompletionScreen";
 
 interface DisplayMessage {
@@ -31,18 +30,17 @@ export default function LearnPage() {
   const [session, setSession] = useState<ChatSession | null>(null);
   const [displayMessages, setDisplayMessages] = useState<DisplayMessage[]>([]);
   const [storedMessages, setStoredMessages] = useState<ChatMessage[]>([]);
-  const [quizResults, setQuizResults] = useState<{ correct: boolean }[]>([]);
-  const [quizSelected, setQuizSelected] = useState<number | undefined>();
   const [streamingText, setStreamingText] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [isGeneratingIslands, setIsGeneratingIslands] = useState(false);
-  const [quizQuestions, setQuizQuestions] = useState<QuizQuestionData[]>([]);
-  const [isGeneratingQuiz, setIsGeneratingQuiz] = useState(false);
-  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [saveError, setSaveError] = useState("");
   const [islands, setIslands] = useState<Island[]>([]);
-  const [islandStep, setIslandStep] = useState<"teach" | "probe" | "mini-quiz">("teach");
-  const [quizSubPhase, setQuizSubPhase] = useState<"idle" | "answering" | "result">("idle");
+  const [islandStep, setIslandStep] = useState<"teach" | "assess" | "remediation">("teach");
+  const [assessRound, setAssessRound] = useState(0);
+  const [provenConcepts, setProvenConcepts] = useState<string[]>([]);
+  const [weakConcepts, setWeakConcepts] = useState<string[]>([]);
+  const [remediationCount, setRemediationCount] = useState(0);
+  const [isEvaluating, setIsEvaluating] = useState(false);
 
   const islandTitles = islands.map((i) => i.title);
   const phase = useSessionPhaseManager(islandTitles);
@@ -53,6 +51,11 @@ export default function LearnPage() {
   const prevPhaseRef = useRef("");
   const contentEndRef = useRef<HTMLDivElement>(null);
   const autoStartRef = useRef(false);
+  const assessQuestionRef = useRef("");
+  const evaluateResultRef = useRef<EvaluateResult | null>(null);
+
+  const MAX_ASSESS_ROUNDS = 4;
+  const MAX_REMEDIATION = 2;
 
   useEffect(() => {
     contentEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -106,7 +109,7 @@ export default function LearnPage() {
 
           setDisplayMessages(
             messages
-              .filter((m: ChatMessage) => !m.content.startsWith("__ISLANDS__:") && !m.content.startsWith("__QUIZ__:"))
+              .filter((m: ChatMessage) => !m.content.startsWith("__ISLANDS__:"))
               .map((m: ChatMessage) => ({
                 role: m.role === "assistant" ? "ai" : "user",
                 text: m.content,
@@ -149,6 +152,17 @@ export default function LearnPage() {
       setSaveError("Nem sikerült menteni az előrehaladást.");
     }
   }, [session]);
+
+  const proceedToNextIsland = useCallback(async () => {
+    const nextCheckpoint = phase.currentCheckpoint + 1;
+    if (nextCheckpoint >= islands.length) {
+      await saveCheckpoint(islands.length);
+      phase.goToNextStep();
+    } else {
+      await saveCheckpoint(nextCheckpoint);
+      router.push(`/topics/${topicId}`);
+    }
+  }, [phase, islands.length, saveCheckpoint, router, topicId]);
 
   const streamAIResponse = useCallback(async (
     history: { role: string; content: string }[],
@@ -193,14 +207,52 @@ export default function LearnPage() {
         const stepPhase = phase.currentStep?.phase;
 
         if (stepPhase === "explain" && islandStep === "teach") {
-          setIslandStep("probe");
+          // End of teach → enter assess
+          const currentIsland = islands[phase.stepIndex];
+          const firstFocus = currentIsland?.key_concepts[0] ?? "";
+          assessQuestionRef.current = firstFocus;
+          setAssessRound(1);
+          setIslandStep("assess");
           phase.setSubPhase("waiting-response");
-        } else if (stepPhase === "explain" && islandStep === "probe") {
-          setIslandStep("mini-quiz");
-          setQuizSubPhase("idle");
-          phase.setSubPhase("waiting-response");
-        } else if (stepPhase === "quiz") {
-          phase.setSubPhase("quiz-answering");
+        } else if (islandStep === "assess" || islandStep === "remediation") {
+          // After Lumi's reaction stream
+          const result = evaluateResultRef.current;
+          evaluateResultRef.current = null;
+
+          if (result && result.next_focus === null) {
+            // All concepts proven → success gate
+            proceedToNextIsland();
+          } else if (result && assessRound >= MAX_ASSESS_ROUNDS) {
+            // Max rounds reached → check gate
+            const currentIsland = islands[phase.stepIndex];
+            const allProven = currentIsland?.key_concepts.every(
+              (k) => provenConcepts.includes(k),
+            ) ?? false;
+
+            if (allProven) {
+              proceedToNextIsland();
+            } else if (remediationCount < MAX_REMEDIATION && islandStep === "assess") {
+              // Enter remediation
+              const newCount = remediationCount + 1;
+              setRemediationCount(newCount);
+              setIslandStep("remediation");
+              setAssessRound(1);
+              // Trigger remediation micro-lesson immediately
+              setTimeout(() => phase.setSubPhase("ai-responding"), 100);
+            } else {
+              // Force proceed (max remediation reached or already in remediation)
+              proceedToNextIsland();
+            }
+          } else if (result && result.next_focus) {
+            // Ask next question
+            assessQuestionRef.current = result.next_focus;
+            setAssessRound((r) => r + 1);
+            setTimeout(() => phase.setSubPhase("ai-responding"), 100);
+          } else {
+            phase.setSubPhase("waiting-response");
+          }
+        } else if (stepPhase === "complete") {
+          // No-op, completion screen handles it
         } else {
           if (hasUserRespondedRef.current) {
             hasUserRespondedRef.current = false;
@@ -233,10 +285,20 @@ export default function LearnPage() {
     const currentIsland = islands[phase.stepIndex];
 
     const filteredMessages = currentMessages.filter(
-      (m) => !m.content.startsWith("__ISLANDS__:") && !m.content.startsWith("__QUIZ__:"),
+      (m) => !m.content.startsWith("__ISLANDS__:"),
     );
 
-    const instruction = getPhaseInstruction(stepPhase || "", hasUserRespondedRef.current, currentIsland, islandStep);
+    const feedbackHint = evaluateResultRef.current?.feedback_hint;
+    const instruction = getPhaseInstruction(
+      stepPhase || "",
+      hasUserRespondedRef.current,
+      currentIsland,
+      islandStep,
+      assessRound,
+      assessQuestionRef.current,
+      provenConcepts,
+      feedbackHint,
+    );
 
     const apiMessages = filteredMessages.length > 0
       ? filteredMessages.map((m) => ({
@@ -254,7 +316,6 @@ export default function LearnPage() {
     if (phase.subPhase !== "ai-responding") return;
     if (isStreaming) return;
     if (phase.currentStep?.phase === "complete") return;
-    if (phase.currentStep?.phase === "quiz") return;
 
     triggerAIResponse();
   }, [phase.subPhase, phase.currentStep?.phase, isStreaming, triggerAIResponse]);
@@ -267,44 +328,15 @@ export default function LearnPage() {
     }
   }, [islands, phase.subPhase, phase]);
 
-  // Generate mini-quiz when entering island's quiz phase
+  // Assess phase: reset state when entering a new island
   useEffect(() => {
-    if (islandStep !== "mini-quiz") return;
-    if (isGeneratingQuiz) return;
-    if (quizQuestions.length > 0) return;
-    if (!session) return;
-
-    const island = islands[phase.stepIndex];
-    if (!island) return;
-
-    const generate = async () => {
-      setIsGeneratingQuiz(true);
-      try {
-        const res = await fetch("/api/quiz/generate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            topicId,
-            islandTitle: island.title,
-            keyConcepts: island.key_concepts,
-            questionCount: 6,
-          }),
-        });
-        if (!res.ok) throw new Error("Mini-quiz generation failed");
-        const questions: QuizQuestionData[] = await res.json();
-        if (questions.length === 0) throw new Error("No questions");
-        setQuizQuestions(questions);
-        setCurrentQuestionIndex(0);
-        setQuizSubPhase("answering");
-      } catch (err) {
-        console.error("Mini-quiz generation error:", err);
-        setError("Nem sikerült a kvíz előkészítése.");
-      } finally {
-        setIsGeneratingQuiz(false);
-      }
-    };
-    generate();
-  }, [islandStep, isGeneratingQuiz, quizQuestions.length, session, islands, phase.stepIndex, topicId]);
+    if (islandStep === "teach") {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setAssessRound(0);
+      setProvenConcepts([]);
+      setWeakConcepts([]);
+    }
+  }, [phase.stepIndex, islandStep]);
 
   // Save checkpoint after each island completes
   useEffect(() => {
@@ -359,12 +391,7 @@ export default function LearnPage() {
       const islandMsg: ChatMessage = { role: "assistant", content: `__ISLANDS__:${JSON.stringify(islandsData)}`, id: "", session_id: newSession.id, created_at: new Date().toISOString() };
       setStoredMessages([islandMsg]);
       setDisplayMessages([]);
-      setQuizResults([]);
-      setQuizSelected(undefined);
-      setQuizQuestions([]);
-      setCurrentQuestionIndex(0);
       setIslandStep("teach");
-      setQuizSubPhase("idle");
 
       setIslands(islandsData);
       autoStartRef.current = true;
@@ -380,28 +407,66 @@ export default function LearnPage() {
     if (isGeneratingIslands) return;
 
     if (session && session.status === "in_progress" && session.current_checkpoint > 0) {
-      setQuizResults([]);
-      setQuizSelected(undefined);
-      setCurrentQuestionIndex(0);
-      setQuizQuestions([]);
-      setQuizSubPhase("idle");
       setIslandStep("teach");
       phase.resumeFrom(session.current_checkpoint);
     } else if (session && session.status === "in_progress") {
-      setQuizResults([]);
-      setQuizSelected(undefined);
-      setCurrentQuestionIndex(0);
-      setQuizQuestions([]);
-      setQuizSubPhase("idle");
       setIslandStep("teach");
       phase.start();
     } else {
-      setQuizResults([]);
-      setQuizSelected(undefined);
-      setCurrentQuestionIndex(0);
-      setQuizQuestions([]);
-      setQuizSubPhase("idle");
       await generateIslandsAndStart();
+    }
+  };
+
+  const handleAssessResponse = async (answer: string) => {
+    if (!session) return;
+    setIsEvaluating(true);
+    try {
+      const currentIsland = islands[phase.stepIndex];
+      if (!currentIsland) return;
+
+      const res = await fetch("/api/evaluate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId: session.id,
+          topicId,
+          islandTitle: currentIsland.title,
+          keyConcepts: currentIsland.key_concepts,
+          question: assessQuestionRef.current,
+          userAnswer: answer,
+          round: assessRound,
+          isRemediation: islandStep === "remediation",
+          provenConcepts,
+        }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error("Evaluate error:", res.status, errText);
+        setError("Értékelési hiba. Próbáld újra!");
+        setIsEvaluating(false);
+        return;
+      }
+
+      const result: EvaluateResult = await res.json();
+
+      const newProven = new Set(provenConcepts);
+      const newWeak = new Set(weakConcepts);
+      for (const v of result.verdicts) {
+        if (v.verdict === "correct") newProven.add(v.concept);
+        else if (v.verdict === "wrong" || v.verdict === "partial") newWeak.add(v.concept);
+      }
+      setProvenConcepts(Array.from(newProven));
+      setWeakConcepts(Array.from(newWeak));
+
+      evaluateResultRef.current = result;
+      hasUserRespondedRef.current = true;
+      phase.setSubPhase("ai-responding");
+    } catch (err) {
+      console.error("Evaluate error:", err);
+      setError("Értékelési hiba. Próbáld újra!");
+    } finally {
+      setIsEvaluating(false);
     }
   };
 
@@ -409,40 +474,12 @@ export default function LearnPage() {
     setDisplayMessages((prev) => [...prev, { role: "user", text }]);
     await saveMessage("user", text);
     setStoredMessages((prev) => [...prev, { role: "user", content: text, id: "", session_id: session!.id, created_at: new Date().toISOString() }]);
-    hasUserRespondedRef.current = true;
-    phase.setSubPhase("ai-responding");
-  };
 
-  const handleQuizSelect = (index: number) => {
-    setQuizSelected(index);
-  };
-
-  const handleQuizCheck = () => {
-    if (quizSelected === undefined) return;
-    const q = quizQuestions[currentQuestionIndex];
-    if (!q) return;
-    const correct = quizSelected === q.correctIndex;
-    setQuizResults((prev) => [...prev, { correct }]);
-    setQuizSubPhase("result");
-  };
-
-  const handleQuizNext = async () => {
-    if (currentQuestionIndex < quizQuestions.length - 1) {
-      setCurrentQuestionIndex((prev) => prev + 1);
-      setQuizSelected(undefined);
-      setQuizSubPhase("answering");
+    if (islandStep === "assess" || islandStep === "remediation") {
+      await handleAssessResponse(text);
     } else {
-      // Mini-quiz done for this island
-      setQuizSubPhase("idle");
-      const nextCheckpoint = phase.currentCheckpoint + 1;
-      if (nextCheckpoint >= islands.length) {
-        // Last island → completion
-        await saveCheckpoint(islands.length);
-        phase.goToNextStep();
-      } else {
-        await saveCheckpoint(nextCheckpoint);
-        router.push(`/topics/${topicId}`);
-      }
+      hasUserRespondedRef.current = true;
+      phase.setSubPhase("ai-responding");
     }
   };
 
@@ -451,13 +488,8 @@ export default function LearnPage() {
     setSession(null);
     setDisplayMessages([]);
     setStoredMessages([]);
-    setQuizResults([]);
-    setQuizSelected(undefined);
-    setQuizQuestions([]);
-    setCurrentQuestionIndex(0);
     setIslands([]);
     setIslandStep("teach");
-    setQuizSubPhase("idle");
   };
 
   const handleBack = async () => {
@@ -512,8 +544,6 @@ export default function LearnPage() {
   const characterName = "Lumi";
   const characterAvatar = "/avatars/lumi.svg";
 
-  const currentQuizQuestion = quizQuestions[currentQuestionIndex] ?? null;
-
   const allMessages = [
     ...displayMessages,
     ...(streamingText ? [{ role: "ai" as const, text: streamingText }] : []),
@@ -530,7 +560,11 @@ export default function LearnPage() {
             <div className="flex-1">
               <ProgressBar current={Math.min(phase.currentCheckpoint, phase.totalCheckpoints)} total={phase.totalCheckpoints} />
             </div>
-            <span className="whitespace-nowrap rounded-full bg-zinc-100 px-3 py-1 text-xs font-medium text-zinc-500 dark:bg-zinc-800">{phase.phaseBadge}</span>
+            <span className="whitespace-nowrap rounded-full bg-zinc-100 px-3 py-1 text-xs font-medium text-zinc-500 dark:bg-zinc-800">
+              {islandStep === "assess" || islandStep === "remediation"
+                ? `Tanítsd Lumit — ${phase.phaseBadge}`
+                : phase.phaseBadge}
+            </span>
           </div>
         )}
       </div>
@@ -593,41 +627,17 @@ export default function LearnPage() {
           </div>
         )}
 
-        {/* Text input for user — hidden during mini-quiz */}
-        {phase.subPhase === "waiting-response" && !isStreaming && islandStep !== "mini-quiz" && (
+        {/* Text input for user — hidden during evaluate */}
+        {phase.subPhase === "waiting-response" && !isStreaming && !isEvaluating && (
           <ResponseInput onSend={handleUserResponse} disabled={false} />
         )}
 
-        {/* Mini-quiz — loading */}
-        {islandStep === "mini-quiz" && isGeneratingQuiz && (
-          <div className="mt-8 flex flex-col items-center gap-4">
-            <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-300 border-t-accent" />
-            <p className="text-sm text-zinc-500">Lumi összeállítja a kvíz kérdéseket...</p>
+        {/* Evaluate loading indicator */}
+        {isEvaluating && (
+          <div className="flex items-center gap-3 rounded-2xl border border-zinc-200/60 bg-zinc-50/50 p-4 dark:border-zinc-800/60 dark:bg-zinc-900/50">
+            <div className="h-3 w-3 animate-pulse rounded-full bg-accent" />
+            <p className="text-sm text-zinc-500">Lumi gondolkodik...</p>
           </div>
-        )}
-
-        {/* Mini-quiz — answer phase */}
-        {islandStep === "mini-quiz" && !isGeneratingQuiz && quizSubPhase === "answering" && currentQuizQuestion && (
-          <QuizQuestion
-            question={currentQuizQuestion}
-            selectedAnswer={quizSelected}
-            showResult={false}
-            onSelect={handleQuizSelect}
-            onCheck={handleQuizCheck}
-            onNext={() => {}}
-          />
-        )}
-
-        {/* Mini-quiz — result phase */}
-        {islandStep === "mini-quiz" && !isGeneratingQuiz && quizSubPhase === "result" && currentQuizQuestion && (
-          <QuizQuestion
-            question={currentQuizQuestion}
-            selectedAnswer={quizSelected}
-            showResult={true}
-            onSelect={handleQuizSelect}
-            onCheck={handleQuizCheck}
-            onNext={handleQuizNext}
-          />
         )}
 
         {/* Completion */}
@@ -635,11 +645,11 @@ export default function LearnPage() {
           <CompletionScreen
             topicName={topic.name}
             stats={{
-              score: quizResults.filter((r) => r.correct).length,
-              totalQuestions: quizResults.length,
+              score: provenConcepts.length,
+              totalQuestions: islands[phase.stepIndex]?.key_concepts.length ?? 0,
               exercisesCompleted: Math.min(phase.currentCheckpoint, islands.length),
               totalExercises: islands.length,
-              xpEarned: quizResults.length * 15,
+              xpEarned: provenConcepts.length * 15,
             }}
             onRestart={handleRestart}
             onBack={() => router.push(`/topics/${topicId}`)}
@@ -657,28 +667,51 @@ function getPhaseInstruction(
   phase: string,
   isFollowUp: boolean,
   currentIsland?: Island,
-  islandStep?: "teach" | "probe" | "mini-quiz",
+  islandStep?: "teach" | "assess" | "remediation",
+  assessRound?: number,
+  assessQuestionRef?: string,
+  provenConcepts?: string[],
+  feedbackHint?: string,
 ): string {
   if (currentIsland) {
-    if (islandStep === "probe") {
-      return `Most használd az Inverted Teacher módszert. Tégy úgy, mintha nem értenéd ezt a részt. Tegyél fel egy próbakérdést az alábbiak közül (vagy ehhez hasonlót): ${currentIsland.probe_questions.join(", ")}. Várd meg a válaszát, és ne adj megoldást!`;
+    if (islandStep === "teach") {
+      const approachGuides: Record<string, { guide: string; closing: string }> = {
+        scenario: {
+          guide: "Mutass be egy valós életből vett szituációt vagy problémát, és vezesd végig a felhasználót a megértésén.",
+          closing: "A szituáció végén EGYETLEN nyitott kérdéssel add át a szót a felhasználónak.",
+        },
+        socratic: {
+          guide: "Tegyél fel irányított kérdéseket, amelyek segítenek a felhasználónak magától felfedezni a választ. Ne mondd ki a választ előre.",
+          closing: "Egyszerre csak EGY kérdést tegyél fel, és várd meg a felhasználó válaszát.",
+        },
+        conversational: {
+          guide: "Magyarázd el természetes, beszélgetős stílusban a témát.",
+          closing: "A magyarázat végén rövid, egyetlen kérdéssel ellenőrizd, hogy követhető volt-e.",
+        },
+      };
+      const a = approachGuides[currentIsland.approach] ?? approachGuides.conversational;
+      return `Fázis: Tanulás — ${a.guide} Csak a(z) "${currentIsland.title}" részhez tartozó kulcsfogalmakat fedd le: ${currentIsland.key_concepts.join(", ")}. NE említs más szigeteket vagy későbbi témákat. ${a.closing} Beszélj magyarul.`;
     }
-    const approachGuides: Record<string, { guide: string; closing: string }> = {
-      scenario: {
-        guide: "Mutass be egy valós életből vett szituációt vagy problémát, és vezesd végig a felhasználót a megértésén.",
-        closing: "A szituáció végén EGYETLEN nyitott kérdéssel add át a szót a felhasználónak.",
-      },
-      socratic: {
-        guide: "Tegyél fel irányított kérdéseket, amelyek segítenek a felhasználónak magától felfedezni a választ. Ne mondd ki a választ előre.",
-        closing: "Egyszerre csak EGY kérdést tegyél fel, és várd meg a felhasználó válaszát.",
-      },
-      conversational: {
-        guide: "Magyarázd el természetes, beszélgetős stílusban a témát.",
-        closing: "A magyarázat végén rövid, egyetlen kérdéssel ellenőrizd, hogy követhető volt-e.",
-      },
-    };
-    const a = approachGuides[currentIsland.approach] ?? approachGuides.conversational;
-    return `Fázis: Tanulás — ${a.guide} Csak a(z) "${currentIsland.title}" részhez tartozó kulcsfogalmakat fedd le: ${currentIsland.key_concepts.join(", ")}. NE említs más szigeteket vagy későbbi témákat. ${a.closing} Beszélj magyarul.`;
+
+    if (islandStep === "assess" && !isFollowUp) {
+      const focus = assessQuestionRef || currentIsland.key_concepts[0] || "";
+      const probe = currentIsland.probe_questions[0]
+        ? ` Kiindulásnak használhatod ezt a kérdést: "${currentIsland.probe_questions[0]}".`
+        : "";
+      return `Fázis: Ellenőrzés — fordított tanár. Te most egy lelkes, de értetlen diák vagy, a felhasználó a tanárod. A(z) "${currentIsland.title}" témából a következő fogalmat NEM érted: "${focus}". Tegyél fel EGYETLEN természetes, diákos kérdést erről a fogalomról — olyat, amire csak valódi megértéssel lehet jól válaszolni, bemagolt definícióval nem. Ne magyarázz, ne segíts, csak kérdezz. Beszélj magyarul.${probe}`;
+    }
+
+    if ((islandStep === "assess" || islandStep === "remediation") && isFollowUp) {
+      const hint = feedbackHint || "A felhasználó válaszolt a kérdésedre.";
+      return `Fázis: Ellenőrzés — fordított tanár, reakció. A tanárod (a felhasználó) most magyarázott neked. Értékelési támpont: ${hint}. Diákként reagálj erre 2-3 mondatban: ha jól magyarázott, mutasd meg, hogy megértetted (mondd vissza SAJÁT példával); ha hibázott vagy hiányos volt, diákos értetlenséggel kérdezz vissza pont a problémás részre. Ne oktasd ki, ne javítsd ki tanárosan — te a diák vagy. Beszélj magyarul.`;
+    }
+
+    if (islandStep === "remediation" && !isFollowUp) {
+      const weakList = provenConcepts?.length
+        ? currentIsland.key_concepts.filter((k) => !provenConcepts.includes(k)).join(", ")
+        : currentIsland.key_concepts.join(", ");
+      return `Fázis: Felzárkóztatás. A felhasználónak a következő fogalmak mentek gyengén: ${weakList}. Most rövid időre lépj ki a diák-szerepből: tanulópartnerként adj fogalmanként egy rövid (3-4 mondatos), az eddigitől ELTÉRŐ megközelítésű magyarázatot — hétköznapi analógiával vagy konkrét példával. Zárásként jelezd, hogy mindjárt visszaváltasz diáknak, és újra kérdezni fogsz. Beszélj magyarul.`;
+    }
   }
   if (phase === "explain") {
     return isFollowUp

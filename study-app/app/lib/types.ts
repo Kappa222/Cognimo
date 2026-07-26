@@ -89,3 +89,14 @@ export interface CompletionStats {
   totalExercises: number;
   xpEarned: number;
 }
+
+export interface EvaluateVerdict {
+  concept: string;
+  verdict: "correct" | "partial" | "wrong" | "missing" | "not_required";
+}
+
+export interface EvaluateResult {
+  verdicts: EvaluateVerdict[];
+  feedback_hint: string;
+  next_focus: string | null;
+}
