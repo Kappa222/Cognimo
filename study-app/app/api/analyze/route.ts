@@ -1,21 +1,5 @@
 import { createClient } from "../../../lib/supabase-server";
-import OpenAI from "openai";
-
-const GROQ_MODEL = "llama-3.3-70b-versatile";
-const FALLBACK_MODEL = "gpt-4o";
-
-function getGroqClient() {
-  return new OpenAI({
-    baseURL: "https://api.groq.com/openai/v1",
-    apiKey: process.env.GROQ_API_KEY!,
-  });
-}
-
-function getOpenAIClient() {
-  return new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-  });
-}
+import { completeJson } from "../../../lib/ai";
 
 const SYSTEM_PROMPT =
   "Te vagy Lumi, egy barátságos tanulótárs. A feladatod, hogy tananyagokat elemezz, és strukturált tanulási tervet készíts.\n\n" +
@@ -65,18 +49,8 @@ export async function POST(req: Request) {
   const messages = [{ role: "system" as const, content: fullPrompt }];
 
   try {
-    const groq = getGroqClient();
-    const completion = await groq.chat.completions.create({
-      model: GROQ_MODEL,
-      messages,
-      response_format: { type: "json_object" },
-    });
-
-    const content = completion.choices[0]?.message?.content;
-    if (!content) throw new Error("Empty response");
-
-    const parsed = JSON.parse(content);
-    const islands = parsed.islands ?? [];
+    const parsed = await completeJson(messages);
+    const islands = (parsed as Record<string, unknown>).islands ?? [];
 
     if (!Array.isArray(islands) || islands.length === 0) {
       throw new Error("No islands generated");
@@ -85,37 +59,8 @@ export async function POST(req: Request) {
     return new Response(JSON.stringify(islands), {
       headers: { "Content-Type": "application/json" },
     });
-  } catch (groqError) {
-    console.error("Groq analyze error, falling back:", groqError);
-
-    if (!process.env.OPENAI_API_KEY) {
-      return new Response("AI service unavailable", { status: 503 });
-    }
-
-    try {
-      const openai = getOpenAIClient();
-      const completion = await openai.chat.completions.create({
-        model: FALLBACK_MODEL,
-        messages,
-        response_format: { type: "json_object" },
-      });
-
-      const content = completion.choices[0]?.message?.content;
-      if (!content) throw new Error("Empty response");
-
-      const parsed = JSON.parse(content);
-      const islands = parsed.islands ?? [];
-
-      if (!Array.isArray(islands) || islands.length === 0) {
-        throw new Error("No islands generated");
-      }
-
-      return new Response(JSON.stringify(islands), {
-        headers: { "Content-Type": "application/json" },
-      });
-    } catch (fallbackError) {
-      console.error("Fallback OpenAI analyze error:", fallbackError);
-      return new Response("AI service unavailable", { status: 503 });
-    }
+  } catch (err) {
+    console.error("Analyze error:", err);
+    return new Response("AI service unavailable", { status: 503 });
   }
 }
