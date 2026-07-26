@@ -69,7 +69,7 @@ export default function TopicDetailPage() {
 
     const { data: latestSession } = await supabase
       .from("chat_sessions")
-      .select("id, current_checkpoint")
+      .select("id, current_checkpoint, plan")
       .eq("topic_id", topicId)
       .eq("status", "in_progress")
       .order("updated_at", { ascending: false })
@@ -79,18 +79,25 @@ export default function TopicDetailPage() {
     if (latestSession) {
       setCurrentCheckpoint(latestSession.current_checkpoint);
 
-      const msgRes = await fetch(`/api/sessions/${latestSession.id}`);
-      if (msgRes.ok) {
-        const { messages } = await msgRes.json();
-        const islandMsg = messages.find(
-          (m: { role: string; content: string }) =>
-            m.role === "assistant" && m.content.startsWith("__ISLANDS__:"),
-        );
-        if (islandMsg) {
-          try {
-            const islands: { title: string }[] = JSON.parse(islandMsg.content.slice(11));
-            setIslandTitles(islands.map((i) => i.title));
-          } catch { /* ignore */ }
+      const ls = latestSession as { id: string; current_checkpoint: number; plan?: unknown };
+      // Load islands from plan column (new) or fallback to __ISLANDS__: message (old)
+      if (ls.plan && Array.isArray(ls.plan) && ls.plan.length > 0) {
+        const islands = ls.plan as { title: string }[];
+        setIslandTitles(islands.map((i: { title: string }) => i.title));
+      } else {
+        const msgRes = await fetch(`/api/sessions/${ls.id}`);
+        if (msgRes.ok) {
+          const { messages } = await msgRes.json();
+          const islandMsg = messages.find(
+            (m: { role: string; content: string }) =>
+              m.role === "assistant" && m.content.startsWith("__ISLANDS__:"),
+          );
+          if (islandMsg) {
+            try {
+              const islands: { title: string }[] = JSON.parse(islandMsg.content.slice(11));
+              setIslandTitles(islands.map((i) => i.title));
+            } catch { /* ignore */ }
+          }
         }
       }
     }

@@ -95,17 +95,22 @@ export default function LearnPage() {
         setSession(existing);
         const msgRes = await fetch(`/api/sessions/${existing.id}`);
         if (msgRes.ok) {
-          const { messages } = await msgRes.json();
+          const { session: sessionData, messages } = await msgRes.json();
           setStoredMessages(messages);
 
-          const islandMsg = messages.find(
-            (m: ChatMessage) => m.role === "assistant" && m.content.startsWith("__ISLANDS__:"),
-          );
-          if (islandMsg) {
-            try {
-              const data: Island[] = JSON.parse(islandMsg.content.slice(11));
-              setIslands(data);
-            } catch { /* ignore */ }
+          // Load islands from plan column (new) or fallback to __ISLANDS__: message (old)
+          if (sessionData?.plan && Array.isArray(sessionData.plan) && sessionData.plan.length > 0) {
+            setIslands(sessionData.plan);
+          } else {
+            const islandMsg = messages.find(
+              (m: ChatMessage) => m.role === "assistant" && m.content.startsWith("__ISLANDS__:"),
+            );
+            if (islandMsg) {
+              try {
+                const data: Island[] = JSON.parse(islandMsg.content.slice(11));
+                setIslands(data);
+              } catch { /* ignore */ }
+            }
           }
 
           setDisplayMessages(
@@ -393,17 +398,14 @@ export default function LearnPage() {
       const sessionRes = await fetch("/api/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topic_id: topicId, subject_id: subjectId }),
+        body: JSON.stringify({ topic_id: topicId, subject_id: subjectId, plan: islandsData }),
       });
       if (!sessionRes.ok) throw new Error("Session creation failed");
 
       const newSession: ChatSession = await sessionRes.json();
       setSession(newSession);
 
-      await saveMessage("assistant", `__ISLANDS__:${JSON.stringify(islandsData)}`);
-
-      const islandMsg: ChatMessage = { role: "assistant", content: `__ISLANDS__:${JSON.stringify(islandsData)}`, id: "", session_id: newSession.id, created_at: new Date().toISOString() };
-      setStoredMessages([islandMsg]);
+      setStoredMessages([]);
       setDisplayMessages([]);
       setIslandStep("teach");
 

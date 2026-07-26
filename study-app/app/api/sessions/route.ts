@@ -35,23 +35,29 @@ export async function POST(req: Request) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const { topic_id, subject_id } = await req.json();
+  const { topic_id, subject_id, plan } = await req.json();
 
   if (!topic_id || !subject_id) {
     return NextResponse.json({ error: "topic_id and subject_id required" }, { status: 400 });
   }
 
+  const insertData: Record<string, unknown> = {
+    user_id: user.id,
+    subject_id,
+    topic_id,
+    method: "study",
+    current_checkpoint: 0,
+    total_checkpoints: Array.isArray(plan) ? plan.length : 7,
+    status: "in_progress",
+  };
+
+  if (plan) {
+    insertData.plan = plan;
+  }
+
   const { data, error } = await supabase
     .from("chat_sessions")
-    .insert({
-      user_id: user.id,
-      subject_id,
-      topic_id,
-      method: "study",
-      current_checkpoint: 0,
-      total_checkpoints: 7,
-      status: "in_progress",
-    })
+    .insert(insertData)
     .select()
     .single();
 
