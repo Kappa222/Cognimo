@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "../../../lib/supabase";
 import ProgressRoadmap from "../../components/ProgressRoadmap";
+import StatisticsTab from "../../components/StatisticsTab";
 
 const FALLBACK_TOTAL_CHECKPOINTS = 7;
 
@@ -36,7 +37,6 @@ export default function TopicDetailPage() {
   const [subject, setSubject] = useState<Subject | null>(null);
   const [materials, setMaterials] = useState<Material[]>([]);
   const [activeTab, setActiveTab] = useState<Tab>("Tanulj");
-  const [sessionCount, setSessionCount] = useState(0);
   const [currentCheckpoint, setCurrentCheckpoint] = useState(0);
   const [avatarUrl, setAvatarUrl] = useState("");
   const [pageLoading, setPageLoading] = useState(true);
@@ -66,12 +66,6 @@ export default function TopicDetailPage() {
       .eq("topic_id", topicId)
       .order("created_at", { ascending: false });
     if (m) setMaterials(m);
-
-    const { count } = await supabase
-      .from("chat_sessions")
-      .select("*", { count: "exact", head: true })
-      .eq("topic_id", topicId);
-    if (count !== null) setSessionCount(count);
 
     const { data: latestSession } = await supabase
       .from("chat_sessions")
@@ -291,20 +285,7 @@ export default function TopicDetailPage() {
       )}
 
       {activeTab === "Statisztika" && (
-        <div key="statisztika" className="grid gap-4 sm:grid-cols-3 animate-fade-in-up">
-          <div className="rounded-2xl border border-zinc-200/60 bg-white p-6 text-center shadow-sm dark:border-zinc-800/60 dark:bg-zinc-900">
-            <p className="text-2xl font-bold text-accent">{sessionCount}</p>
-            <p className="mt-1 text-xs text-zinc-500">Chat szekciók</p>
-          </div>
-          <div className="rounded-2xl border border-zinc-200/60 bg-white p-6 text-center shadow-sm dark:border-zinc-800/60 dark:bg-zinc-900">
-            <p className="text-2xl font-bold text-accent">{materials.length}</p>
-            <p className="mt-1 text-xs text-zinc-500">Tananyagok</p>
-          </div>
-          <div className="rounded-2xl border border-zinc-200/60 bg-white p-6 text-center shadow-sm dark:border-zinc-800/60 dark:bg-zinc-900">
-            <p className="text-2xl font-bold text-accent">—</p>
-            <p className="mt-1 text-xs text-zinc-500">Kvízek</p>
-          </div>
-        </div>
+        <StatisticsTab topicId={topicId} />
       )}
     </div>
   );

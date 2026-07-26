@@ -53,6 +53,7 @@ export default function LearnPage() {
   const autoStartRef = useRef(false);
   const assessQuestionRef = useRef("");
   const evaluateResultRef = useRef<EvaluateResult | null>(null);
+  const forceFarewellRef = useRef(false);
 
   const MAX_ASSESS_ROUNDS = 4;
   const MAX_REMEDIATION = 2;
@@ -240,8 +241,9 @@ export default function LearnPage() {
               // Trigger remediation micro-lesson immediately
               setTimeout(() => phase.setSubPhase("ai-responding"), 100);
             } else {
-              // Force proceed (max remediation reached or already in remediation)
-              proceedToNextIsland();
+              // Force proceed — send farewell first
+              forceFarewellRef.current = true;
+              setTimeout(() => phase.setSubPhase("ai-responding"), 100);
             }
           } else if (result && result.next_focus) {
             // Ask next question
@@ -251,6 +253,10 @@ export default function LearnPage() {
           } else {
             phase.setSubPhase("waiting-response");
           }
+        } else if (forceFarewellRef.current) {
+          // Farewell message was just sent — now proceed
+          forceFarewellRef.current = false;
+          proceedToNextIsland();
         } else if (stepPhase === "complete") {
           // No-op, completion screen handles it
         } else {
@@ -288,17 +294,25 @@ export default function LearnPage() {
       (m) => !m.content.startsWith("__ISLANDS__:"),
     );
 
-    const feedbackHint = evaluateResultRef.current?.feedback_hint;
-    const instruction = getPhaseInstruction(
-      stepPhase || "",
-      hasUserRespondedRef.current,
-      currentIsland,
-      islandStep,
-      assessRound,
-      assessQuestionRef.current,
-      provenConcepts,
-      feedbackHint,
-    );
+    let instruction: string;
+    if (forceFarewellRef.current) {
+      const weakList = currentIsland?.key_concepts
+        .filter((k) => !provenConcepts.includes(k))
+        .join(", ") ?? "";
+      instruction = `Fázis: Befejezés. A felhasználó most fejezte be a(z) "${currentIsland?.title ?? ""}" rész tanulását. Adj rövid, bátorító összefoglalót (2-3 mondat), ami megnevezi, hogy mely fogalmakhoz érdemes később visszatérni: ${weakList}. Beszélj magyarul.`;
+    } else {
+      const feedbackHint = evaluateResultRef.current?.feedback_hint;
+      instruction = getPhaseInstruction(
+        stepPhase || "",
+        hasUserRespondedRef.current,
+        currentIsland,
+        islandStep,
+        assessRound,
+        assessQuestionRef.current,
+        provenConcepts,
+        feedbackHint,
+      );
+    }
 
     const apiMessages = filteredMessages.length > 0
       ? filteredMessages.map((m) => ({
@@ -644,13 +658,7 @@ export default function LearnPage() {
         {phase.isComplete && (
           <CompletionScreen
             topicName={topic.name}
-            stats={{
-              score: provenConcepts.length,
-              totalQuestions: islands[phase.stepIndex]?.key_concepts.length ?? 0,
-              exercisesCompleted: Math.min(phase.currentCheckpoint, islands.length),
-              totalExercises: islands.length,
-              xpEarned: provenConcepts.length * 15,
-            }}
+            topicId={topicId}
             onRestart={handleRestart}
             onBack={() => router.push(`/topics/${topicId}`)}
           />
