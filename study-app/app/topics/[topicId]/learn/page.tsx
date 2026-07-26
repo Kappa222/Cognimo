@@ -210,7 +210,7 @@ export default function LearnPage() {
     setIsStreaming(true);
     setStreamingText("");
     abortRef.current = new AbortController();
-    streamFailCountRef.current = 0;
+    // Retry count persists across calls; reset on new user action below
 
     try {
       const res = await fetch("/api/chat", {
@@ -310,8 +310,16 @@ export default function LearnPage() {
           }
         }
       } else {
-        setStreamingText("");
-        setError("Az AI nem tudott választ adni. Próbáld újra!");
+        // Empty response — auto-retry up to 2 times, show error only after
+        streamFailCountRef.current++;
+        if (streamFailCountRef.current >= 2) {
+          setStreamingText("");
+          setError("Az AI nem tudott választ adni. Próbáld újra!");
+          streamFailCountRef.current = 0;
+          if (phase.subPhase === "ai-responding") {
+            phase.setSubPhase("waiting-response");
+          }
+        }
       }
     } catch (err) {
       if ((err as Error).name === "AbortError") return;
@@ -524,6 +532,7 @@ export default function LearnPage() {
   };
 
   const handleUserResponse = async (text: string) => {
+    streamFailCountRef.current = 0;
     setDisplayMessages((prev) => [...prev, { role: "user", text }]);
     await saveMessage("user", text);
     setStoredMessages((prev) => [...prev, { role: "user", content: text, id: "", session_id: session!.id, created_at: new Date().toISOString() }]);
