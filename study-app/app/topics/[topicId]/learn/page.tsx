@@ -113,6 +113,19 @@ export default function LearnPage() {
             }
           }
 
+          // Restore assess state from session
+          const sData = sessionData as { island_step?: string; assess_state?: { round: number; proven: string[]; weak: string[]; remediationCount: number; nextFocus: string } } | undefined;
+          if (sData?.island_step && (sData.island_step === "assess" || sData.island_step === "remediation")) {
+            setIslandStep(sData.island_step);
+            if (sData.assess_state) {
+              setAssessRound(sData.assess_state.round);
+              setProvenConcepts(sData.assess_state.proven ?? []);
+              setWeakConcepts(sData.assess_state.weak ?? []);
+              setRemediationCount(sData.assess_state.remediationCount ?? 0);
+              assessQuestionRef.current = sData.assess_state.nextFocus ?? "";
+            }
+          }
+
           setDisplayMessages(
             messages
               .filter((m: ChatMessage) => !m.content.startsWith("__ISLANDS__:"))
@@ -144,10 +157,16 @@ export default function LearnPage() {
     }
   }, [session]);
 
-  const saveCheckpoint = useCallback(async (checkpoint: number, status?: string) => {
+  const saveCheckpoint = useCallback(async (
+    checkpoint: number,
+    status?: string,
+    extra?: { island_step?: string; assess_state?: unknown },
+  ) => {
     if (!session) return;
     const body: Record<string, unknown> = { current_checkpoint: checkpoint };
     if (status) body.status = status;
+    if (extra?.island_step) body.island_step = extra.island_step;
+    if (extra?.assess_state) body.assess_state = extra.assess_state;
     const res = await fetch(`/api/sessions/${session.id}/checkpoint`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -158,6 +177,19 @@ export default function LearnPage() {
       setSaveError("Nem sikerült menteni az előrehaladást.");
     }
   }, [session]);
+
+  const saveAssessState = useCallback(async () => {
+    await saveCheckpoint(phase.currentCheckpoint, undefined, {
+      island_step: islandStep,
+      assess_state: {
+        round: assessRound,
+        proven: provenConcepts,
+        weak: weakConcepts,
+        remediationCount,
+        nextFocus: assessQuestionRef.current,
+      },
+    });
+  }, [phase.currentCheckpoint, saveCheckpoint, islandStep, assessRound, provenConcepts, weakConcepts, remediationCount]);
 
   const proceedToNextIsland = useCallback(async () => {
     const nextCheckpoint = phase.currentCheckpoint + 1;
@@ -227,6 +259,7 @@ export default function LearnPage() {
 
           if (result && result.next_focus === null) {
             // All concepts proven → success gate
+            saveAssessState();
             proceedToNextIsland();
           } else if (result && assessRound >= MAX_ASSESS_ROUNDS) {
             // Max rounds reached → check gate
@@ -236,6 +269,7 @@ export default function LearnPage() {
             ) ?? false;
 
             if (allProven) {
+              saveAssessState();
               proceedToNextIsland();
             } else if (remediationCount < MAX_REMEDIATION && islandStep === "assess") {
               // Enter remediation
@@ -243,17 +277,20 @@ export default function LearnPage() {
               setRemediationCount(newCount);
               setIslandStep("remediation");
               setAssessRound(1);
+              saveAssessState();
               // Trigger remediation micro-lesson immediately
               setTimeout(() => phase.setSubPhase("ai-responding"), 100);
             } else {
               // Force proceed — send farewell first
               forceFarewellRef.current = true;
+              saveAssessState();
               setTimeout(() => phase.setSubPhase("ai-responding"), 100);
             }
           } else if (result && result.next_focus) {
             // Ask next question
             assessQuestionRef.current = result.next_focus;
             setAssessRound((r) => r + 1);
+            saveAssessState();
             setTimeout(() => phase.setSubPhase("ai-responding"), 100);
           } else {
             phase.setSubPhase("waiting-response");
@@ -512,7 +549,11 @@ export default function LearnPage() {
     if (session && phase.isStarted && !phase.isComplete) {
       const confirmed = window.confirm("Biztosan kilépsz a tanulásból? Az előrehaladásod elmentjük.");
       if (!confirmed) return;
-      await saveCheckpoint(phase.currentCheckpoint);
+      if (islandStep === "assess" || islandStep === "remediation") {
+        await saveAssessState();
+      } else {
+        await saveCheckpoint(phase.currentCheckpoint);
+      }
     }
     if (isGeneratingIslands) {
       abortRef.current?.abort();

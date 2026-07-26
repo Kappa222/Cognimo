@@ -10,7 +10,7 @@ export async function PUT(
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { id } = await params;
-  const { current_checkpoint, status } = await req.json();
+  const { current_checkpoint, status, island_step, assess_state } = await req.json();
 
   if (current_checkpoint === undefined) {
     return NextResponse.json({ error: "current_checkpoint required" }, { status: 400 });
@@ -23,6 +23,14 @@ export async function PUT(
 
   if (status) {
     updateData.status = status;
+  }
+
+  if (island_step) {
+    updateData.island_step = island_step;
+  }
+
+  if (assess_state) {
+    updateData.assess_state = assess_state;
   }
 
   const { data, error } = await supabase
