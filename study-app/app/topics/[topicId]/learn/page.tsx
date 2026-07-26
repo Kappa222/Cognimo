@@ -245,7 +245,7 @@ export default function LearnPage() {
         }))
       : [{
           role: "user" as const,
-          content: `The user wants to learn about: ${topic?.name ?? "this topic"}. Start explaining based on the study materials.`,
+          content: `A felhasználó ezt a témát szeretné megtanulni: "${topic?.name ?? "ismeretlen téma"}". Kezdd el a tanulást a tananyag és a fázis-instrukció alapján, magyarul.`,
         }];
     await streamAIResponse(apiMessages, instruction);
   }, [streamAIResponse, topic, phase, islands, islandStep]);
@@ -663,17 +663,26 @@ function getPhaseInstruction(
     if (islandStep === "probe") {
       return `Most használd az Inverted Teacher módszert. Tégy úgy, mintha nem értenéd ezt a részt. Tegyél fel egy próbakérdést az alábbiak közül (vagy ehhez hasonlót): ${currentIsland.probe_questions.join(", ")}. Várd meg a válaszát, és ne adj megoldást!`;
     }
-    const approachGuides: Record<string, string> = {
-      scenario: "Mutass be egy valós életből vett szituációt vagy problémát, és vezesd végig a felhasználót a megértésén.",
-      socratic: "Tegyél fel irányított kérdéseket, amik segítenek a felhasználónak felfedezni a választ.",
-      conversational: "Magyarázd el természetes módon, miközben bevonod a felhasználót a beszélgetésbe.",
+    const approachGuides: Record<string, { guide: string; closing: string }> = {
+      scenario: {
+        guide: "Mutass be egy valós életből vett szituációt vagy problémát, és vezesd végig a felhasználót a megértésén.",
+        closing: "A szituáció végén EGYETLEN nyitott kérdéssel add át a szót a felhasználónak.",
+      },
+      socratic: {
+        guide: "Tegyél fel irányított kérdéseket, amelyek segítenek a felhasználónak magától felfedezni a választ. Ne mondd ki a választ előre.",
+        closing: "Egyszerre csak EGY kérdést tegyél fel, és várd meg a felhasználó válaszát.",
+      },
+      conversational: {
+        guide: "Magyarázd el természetes, beszélgetős stílusban a témát.",
+        closing: "A magyarázat végén rövid, egyetlen kérdéssel ellenőrizd, hogy követhető volt-e.",
+      },
     };
-    const guide = approachGuides[currentIsland.approach] || approachGuides.conversational;
-    return `Fázis: Tanulás — ${guide} Csak a(z) "${currentIsland.title}" részhez tartozó kulcsfogalmakat fedd le: ${currentIsland.key_concepts.join(", ")}. NE említs más részeket vagy későbbi témákat. Ne tegyél fel kérdéseket — csak magyarázz. Beszélj magyarul.`;
+    const a = approachGuides[currentIsland.approach] ?? approachGuides.conversational;
+    return `Fázis: Tanulás — ${a.guide} Csak a(z) "${currentIsland.title}" részhez tartozó kulcsfogalmakat fedd le: ${currentIsland.key_concepts.join(", ")}. NE említs más szigeteket vagy későbbi témákat. ${a.closing} Beszélj magyarul.`;
   }
   if (phase === "explain") {
     return isFollowUp
-      ? "The user just responded to your explanation. Answer their question or acknowledge their response, then move on to the next part of the topic."
+      ? "A felhasználó reagált a magyarázatodra. Válaszolj a kérdésére vagy nyugtázd röviden, majd folytasd a téma következő részével. Beszélj magyarul."
       : "Fázis: Gyakorlatok — Magyarázd el a témát lépésről lépésre a tananyag alapján. Részletes és érthető magyarázatot adj.";
   }
   return "";
