@@ -10,6 +10,7 @@
 - Auth callback route (`/auth/callback`)
 - Dashboard — navigation hub
 - Seed 3 subjects (Matematika, Történelem, Irodalom) with logo colors and descriptions
+- `/api/subjects` — GET list of global subjects
 
 ---
 
@@ -30,7 +31,8 @@
 
 ### Task 3 — Topic Detail Page ✅
 - Create `/topics/[topicId]` page
-- Three tabs: AI Chat | Kvíz | Statisztika
+- Three tabs: Tanulj | Kvíz | Statisztika
+- `StatisticsTab` component — stat cards (sessions completed, materials, quiz attempts)
 - Per-topic stats section (sessions completed, quiz scores)
 - Link subject detail page topic items to this page
 
@@ -40,6 +42,7 @@
 - **New:** `/api/analyze` — analyzes study materials via Gemini 3.5 Flash, splits into logical islands. Each island has: title, approach (scenario/socratic/conversational), key_concepts[], probe_questions[]
 - Islands stored as `__ISLANDS__:` message in session — parsed on resume
 - `/api/plan` kept for backward compatibility but no longer used by the learn page
+- `/api/evaluate` — POST endpoint for Inverted Teacher assessment scoring, called after probe phase
 
 ### Task 4 — Interactive Learning Session (`/topics/[topicId]/learn`)
 
@@ -60,6 +63,7 @@ This is the core of Cognimo — an island-based interactive lesson player, not a
 - `AIBubble` — AI message card with avatar + name + streaming text (token-by-token)
 - `UserBubble` — user response card
 - `ResponseInput` — text input + Küldés button, disabled during AI stream (hidden during mini-quiz)
+- `QuestionPrompt` — (legacy, no longer used in current island flow — kept for compatibility)
 - `QuizQuestion` — MCQ card with 4 option buttons, [Ellenőrzés] button, ✅/❌ indicator + correct answer, [Következő] button (used for both teaching mini-quizzes)
 - `CompletionScreen` — "🎉 Gratulálunk!" card with stats (score, islands completed, XP earned), [🔄 Újratanulás] and [← Vissza] buttons
 - `ProgressBar` — top bar fraction indicator (e.g. "▓▓ 2/5") with island title badge
@@ -129,17 +133,18 @@ This is the core of Cognimo — an island-based interactive lesson player, not a
 - `DELETE /api/account` — deletes Storage files → removes auth user (cascade deletes all data)
 - `getAdminClient()` service-role helper in `lib/supabase-server.ts`
 - "Fiók törlése" button + ConfirmModal with `disabled` prop in `/settings`
-- `supabase/migrations/007_storage_cleanup.sql` — pg_net trigger for Storage cleanup on `study_materials` row deletion
+- `supabase/migrations/007_storage_cleanup.sql` — pg_net trigger for Storage cleanup on `study_materials` row deletion (DB-level fallback — the DELETE endpoint also handles inline Storage cleanup before removing the auth user)
 
 ---
 
 ## Phase 3 — Assessment
 
-### Task 1 — Quiz Generation
-- AI generates quiz questions from a topic's study materials (final step in learning session)
+### Task 1 — Quiz Generation ✅ (per-island mini-quiz)
+- `/api/quiz/generate` — generates 6 MCQ scoped to island's `keyConcepts` (used inline during learn page's mini-quiz phase)
 - Store in `quiz_questions` table — `topic_id` column added ✅
 - Migration run on `quiz_questions` and `quiz_attempts` tables ✅
 - `schema.sql` updated to reflect new columns ✅
+- Standalone global quiz (not per-island) still ❌ — see Task 2 below
 
 ### Task 2 — Quiz UI (`/topics/[topicId]/quiz`)
 - **Reuses `QuizQuestion` component** from Phase 2 (MCQ with 4 options, feedback)
@@ -182,6 +187,8 @@ This is the core of Cognimo — an island-based interactive lesson player, not a
 - Component testing — AIBubble, QuizQuestion, ConfirmModal, ProgressRoadmap, CompletionScreen
 - Error monitoring — log AI API failures (Gemini), storage upload errors
 - Performance audit — bundle size, lazy loading, image optimization, streaming renderer efficiency
+- Quality gate — `npm run build && npm run lint` before every deploy
+- Verify `SUPABASE_SERVICE_ROLE_KEY` set in production for account deletion to work
 - Production deploy — environment config, secrets, Supabase project setup
 
 ---
@@ -190,7 +197,7 @@ This is the core of Cognimo — an island-based interactive lesson player, not a
 
 These aren't phases — they're maintained across all phases:
 
-- **Schema migrations** — `study-app/supabase/migrations/` folder with numbered SQL files (one per schema change); `schema.sql` is always the canonical single-source-of-truth. Current migrations: `001` (session checkpoints), `002`–`006` (island/assessment schema), `007_storage_cleanup.sql` (pg_net Storage cleanup trigger)
+- **Schema migrations** — `study-app/supabase/migrations/` folder with numbered SQL files (one per schema change); `schema.sql` is always the canonical single-source-of-truth. Current migrations: `003` (session checkpoints), `004` (concept_mastery), `005` (session_plan), `006` (resume_state), `007_storage_cleanup.sql` (pg_net Storage cleanup trigger)
 - **API contract** — every endpoint (`/api/chat`, `/api/sessions`, `/api/materials`, `/api/topics`, `/api/account`) has its expected request/response shape documented in the route file header comment
 - **Service role key** — `SUPABASE_SERVICE_ROLE_KEY` required in `.env.local` for account deletion (`DELETE /api/account`); `pg_net` extension required for automatic Storage cleanup on `study_materials` row deletion (`migration 007`)
 - **Subjects setup** — created via Supabase dashboard or seed script; no user-facing CRUD for subjects (fixed set)
