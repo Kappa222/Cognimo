@@ -20,6 +20,9 @@ export default function SettingsPage() {
   const [pageLoading, setPageLoading] = useState(true);
   const [saved, setSaved] = useState(false);
   const [showLogout, setShowLogout] = useState(false);
+  const [showDeleteAccount, setShowDeleteAccount] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
 
   const loadData = useCallback(async () => {
     const { data: userData } = await supabase.auth.getUser();
@@ -79,6 +82,23 @@ export default function SettingsPage() {
     setShowLogout(false);
     await supabase.auth.signOut();
     window.location.href = "/";
+  };
+
+  const handleDeleteAccount = async () => {
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      const res = await fetch("/api/account", { method: "DELETE" });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || "Hiba történt");
+      }
+      await supabase.auth.signOut();
+      window.location.href = "/";
+    } catch (err) {
+      setDeleteError((err as Error).message);
+      setDeleting(false);
+    }
   };
 
   if (pageLoading) {
@@ -171,6 +191,34 @@ export default function SettingsPage() {
         variant="danger"
         onConfirm={handleLogout}
         onCancel={() => setShowLogout(false)}
+      />
+
+      <div className="mt-12 border-t border-zinc-200 pt-8 dark:border-zinc-800">
+        <h2 className="mb-2 text-lg font-semibold text-red-600 dark:text-red-400">Veszélyes műveletek</h2>
+        <p className="mb-4 text-sm text-zinc-500">
+          Ezek a műveletek nem vonhatók vissza.
+        </p>
+        <button
+          onClick={() => setShowDeleteAccount(true)}
+          className="cursor-pointer rounded-lg border border-red-200 bg-red-50 px-5 py-2 text-sm font-medium text-red-600 transition-all duration-200 hover:-translate-y-0.5 hover:bg-red-100 hover:shadow-sm active:scale-[0.98] dark:border-red-900 dark:bg-red-950/50 dark:text-red-400 dark:hover:bg-red-950"
+        >
+          Fiók törlése
+        </button>
+        {deleteError && (
+          <p className="mt-2 text-sm text-red-500">{deleteError}</p>
+        )}
+      </div>
+
+      <ConfirmModal
+        open={showDeleteAccount}
+        title="Fiók törlése"
+        message="Biztosan véglegesen törlöd a fiókodat? Az összes tananyagod, témád, üzeneted és előrehaladásod elvész. Ez a művelet nem vonható vissza."
+        confirmLabel={deleting ? "Törlés..." : "Fiók törlése"}
+        cancelLabel="Mégse"
+        variant="danger"
+        onConfirm={handleDeleteAccount}
+        onCancel={() => { setShowDeleteAccount(false); setDeleteError(""); }}
+        disabled={deleting}
       />
     </div>
   );
