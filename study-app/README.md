@@ -2,7 +2,8 @@
 
 <!-- AI: Agent memory — update this file after every session with new decisions, completed tasks, and known issues. -->
 
-<!-- AI: Git commit cadence — commit after every completed sub-task. Each commit should be a self-contained, meaningful unit. -->
+<!-- AI: Workspace root — C:\Users\adam.kovacs\Cognimo\study-app\ -->
+<!-- AI: Commit format — F<N>: <english summary> where N is a sequential counter (e.g. F6, F7). Commit after every completed sub-task. Each commit should be self-contained. -->
 <!-- AI: Quality gate — before every commit, run `npm run build && npm run lint`. Never commit if either fails. -->
 
 # Cognimo
@@ -45,6 +46,48 @@ The AI plays the persona of **Lumi** (meaning "light", from "lumen") — a frien
 | Learning partner | Lumi — single character with dedicated avatar |
 | Roadmap UI | Horizontal island-based progress roadmap (N islands = AI-generated sections) with left/right arrow nav; user avatar stands on current island, island titles shown below circles |
 | Quality gate | Run `npm run build && npm run lint` before every commit — catches type errors, lint violations, and compilation failures. Full E2E + component testing planned in Phase 5 |
+| UI text language | Hungarian throughout (prompts, button labels, error messages) |
+| Code comments | English only |
+| Component structure | Functional components with TypeScript, explicit prop interfaces, no `any` |
+| Styling | Tailwind v4, `rounded-2xl border-zinc-200/60 bg-white shadow-sm` cards, `cursor-pointer` buttons with hover lift + click press |
+| Migration naming | `supabase/migrations/0XX_<description>.sql` — incrementing 3-digit prefix |
+
+### Directory Layout
+
+```
+study-app/
+├── app/
+│   ├── api/                       — Route handlers
+│   ├── components/                — Shared UI components (ConfirmModal, AIBubble, etc.)
+│   ├── topics/[topicId]/learn/    — Island-based learn page
+│   └── settings/                  — Profile editing + account deletion
+├── lib/
+│   ├── ai.ts                      — Gemini client (completeJson, streamChat) — use this for all AI calls
+│   └── supabase-server.ts         — createClient + getAdminClient (service-role)
+├── supabase/migrations/           — Numbered SQL files (0XX_*.sql)
+├── public/avatars/                — SVG avatars
+└── components/                    — Shared UI components
+```
+
+### Environment Variables
+
+| Variable | Required for |
+|----------|-------------|
+| `GEMINI_API_KEY` | All AI features (island analysis, chat, quiz, evaluation, learning plan) |
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase client (public) |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase client (public) |
+| `SUPABASE_SERVICE_ROLE_KEY` | Account deletion (`DELETE /api/account`) — get from Supabase Dashboard > Project Settings > API |
+
+### AI Service Pattern
+
+Two main exports in `lib/ai.ts`:
+
+- **`completeJson(messages)`** — sends messages to Gemini, returns parsed JSON. Use for structured outputs (island analysis, evaluation, quiz content). Handles system message extraction, empty-contents fallback, `responseMimeType: "application/json"`.
+- **`streamChat(messages, systemPrompt)`** — returns a `ReadableStream` for real-time token output. Use for interactive chat.
+
+API routes that need custom Gemini config (different model params, no JSON mode) instantiate `GoogleGenerativeAI` directly — see `app/api/plan/route.ts`, `app/api/quiz/generate/route.ts`.
+
+Error handling: wrap `generateContent()` and `JSON.parse` in try/catch. Use `catch (e)` only when `e` is referenced in the handler body, otherwise use `catch { }` (no parameter).
 
 ## Database Schema
 
@@ -242,7 +285,7 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 | `/topics/[topicId]/learn`     | ✅     | Phase 2 — Interactive lesson player (AI explains → Inverted Teacher → Reverse Teaching → Quiz → Results, real session flow) |
 | `/topics/[topicId]/quiz`      | ❌     | Phase 3 — Standalone quiz (MCQ with instant feedback, score summary) |
 | `/settings`                   | ✅     | Profile editing, persona change, logout                       |
-| `/api/account`                | ✅     | POST — deletes user's Storage files then removes auth user (cascade deletes all data). Requires `SUPABASE_SERVICE_ROLE_KEY` |
+| `/api/account`                | ✅     | DELETE — removes user's Storage files then auth user (cascade deletes all data). Requires `SUPABASE_SERVICE_ROLE_KEY` |
 | `/api/analyze`                | ✅     | POST — analyzes materials via Gemini 3.5 Flash, returns `Island[]` (title, approach, key_concepts, probe_questions) |
 | `/api/chat`                   | ✅     | Gemini streaming with session context + study materials |
 | `/api/sessions`               | ✅     | POST (create) + GET ?topic_id= (find latest in-progress)      |
