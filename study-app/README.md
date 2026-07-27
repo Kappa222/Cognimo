@@ -15,7 +15,7 @@ The AI plays the persona of **Lumi** (meaning "light", from "lumen") — a frien
 
 - **Framework:** Next.js 16
 - **Styling:** Tailwind v4 (violet accent `#7c3aed`, no external component libraries)
-- **AI:** Groq (Llama 3.3 70B) via OpenAI-compatible SDK, with GPT-4o fallback
+- **AI:** Gemini 3.5 Flash via @google/generative-ai SDK
 - **Database:** Supabase PostgreSQL with RLS on every table
 - **Auth:** Email + password with confirmation link (cookie-based sessions via `@supabase/ssr`)
 - **Client:** `createBrowserClient` (cookies), **Server:** `createServerClient` (cookies)
@@ -28,7 +28,7 @@ The AI plays the persona of **Lumi** (meaning "light", from "lumen") — a frien
 | UI language | Hungarian throughout |
 | Auth flow | Signup → confirmation email → /setup-profile (username + AI persona) → /dashboard |
 | Auth-aware header | Shows Belépés when logged out, ⚙️+Kijelentkezés when logged in; hidden on /login and /setup-profile |
-| AI provider | Groq (Llama 3.3 70B via OpenAI-compatible SDK) — falls back to GPT-4o on failure |
+| AI provider | Gemini 3.5 Flash via @google/generative-ai SDK |
 | AI persona | Lumi (friendly study partner, meaning "light" from "lumen") |
 | Subjects | Fixed set: Matematika, Történelem, Irodalom (global, read-only, with logo colors) |
 | Topics | Per-user CRUD inside a subject |
@@ -80,14 +80,14 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 | Subject detail | `/subjects/[id]` | Back link, subject name heading, topic list with CRUD (create inline form, inline edit, delete via ConfirmModal), empty state dashed card, loading spinner + error + retry states |
 | Topic detail | `/topics/[topicId]` | Back link, breadcrumb, topic name heading, ProgressRoadmap (when materials exist), tab bar (Tanulj / Kvíz / Statisztika), materials list with emoji icons, "Indíts tanulást" CTA, Kvíz tab placeholder ("Hamarosan elérhető..."), Statisztika tab with 3 stat cards |
 | Study materials | `/topics/[topicId]/materials` | Back link, tab bar (Szöveg / PDF), text form (title + textarea), PDF form (title + file input), success banner after upload, material list with expandable text viewer + delete via ConfirmModal, empty state dashed card |
-| Settings | `/settings` | Back link, profile card with username input, avatar card with 2-avatar grid, save button with "Elmentve!" confirmation, logout button with ConfirmModal (danger variant) |
+| Settings | `/settings` | Back link, profile card with username input, avatar card with 2-avatar grid, save button with "Elmentve!" confirmation, logout button with ConfirmModal (danger variant), "Fiók törlése" danger section with ConfirmModal (disabled state during deletion) |
 
 ### ✅ Reusable Components
 
 | Component | Props | Details |
 |---|---|---|
 | `Header` | none | Auth-aware: Belépés when logged out, ⚙️+Kijelentkezés when logged in. Hidden on `/`, `/login`, `/setup-profile`. Kijelentkezés triggers inline ConfirmModal |
-| `ConfirmModal` | `open`, `title`, `message`, `confirmLabel`, `cancelLabel`, `onConfirm`, `onCancel`, `variant` | Backdrop dismiss, focus rings, danger (red) / default (accent) variants |
+| `ConfirmModal` | `open`, `title`, `message`, `confirmLabel`, `cancelLabel`, `onConfirm`, `onCancel`, `variant`, `disabled` | Backdrop dismiss, focus rings, danger (red) / default (accent) variants, disabled prop prevents double-submit |
 | `AnimatedStats` | `stats: {value, label}[]` | IntersectionObserver + requestAnimationFrame + easeOutExpo counter animation |
 | `ProgressRoadmap` | `topicName`, `currentCheckpoint`, `totalCheckpoints`, `phases[]`, `avatarUrl` | 7 islands with avatar on current, left/right arrow nav, 3 phase tints, "Kezdés"/"Folytatás" button. Reads real checkpoint from DB |
 
@@ -101,7 +101,7 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 | Learn page | `/topics/[topicId]/learn` | Interactive lesson player — AI streams explanations, runs Inverted Teacher Q&A, probes during Reverse Teaching, and administers a scored quiz. See design below | ✅ Built with real session flow |
 | Session API | `/api/sessions` | Create, resume, checkpoint save, complete | ✅ Built |
 | Session messages API | `/api/sessions/[id]/messages` | List messages, create | ✅ Built |
-| Chat API update | `/api/chat` | Enhanced with session context, study materials as system prompt, GPT-4o fallback | ✅ Done |
+| Chat API update | `/api/chat` | Enhanced with session context, study materials as system prompt | ✅ Done |
 
 #### Learn Page — Island Flow (`/topics/[topicId]/learn`)
 
@@ -166,7 +166,7 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 
 | Task | Components to Build | Status |
 |---|---|---|
-| **3.5 — Island analysis** | `/api/analyze` — analyzes study materials via Groq (GPT-4o fallback), splits into logical islands with approach, key_concepts, probe_questions | ✅ |
+| **3.5 — Island analysis** | `/api/analyze` — analyzes study materials via Gemini 3.5 Flash, splits into logical islands with approach, key_concepts, probe_questions | ✅ |
 | | Islands stored as `__ISLANDS__:` message in session, parsed on resume | ✅ |
 | **4a — Learn page renderer** | `LearnPage` — page wrapper, island-driven content area, progress bar, back link, loading/error/empty states | ✅ |
 | | `AIBubble` — AI message card with avatar + name + streaming text (token-by-token) | ✅ |
@@ -178,7 +178,7 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 | **4b — Island phase manager** | `useSessionPhaseManager` hook — dynamic structure from island titles, resume support, phase badge shows current island title | ✅ |
 | **4c — Roadmap wiring** | Wire `ProgressRoadmap` to real session.checkpoint, show island titles below circles, "Kezdés"/"Folytatás" Link navigates to learn page | ✅ |
 | **4d — Session lifecycle** | API routes: create session, save checkpoints, resume existing session. Checkpoint saved after island's mini-quiz completed | ✅ |
-| **4e — AI context wiring** | Inject study materials + Lumi persona as system prompt, Groq → GPT-4o fallback. Per-island phase instruction includes approach guide + key_concepts | ✅ |
+| **4e — AI context wiring** | Inject study materials + Lumi persona as system prompt via Gemini 3.5 Flash. Per-island phase instruction includes approach guide + key_concepts | ✅ |
 | **4f — Mini-quiz scoped generation** | `/api/quiz/generate` accepts `keyConcepts` + `questionCount` for island-scoped 6-question mini-quizzes | ✅ |
 
 ---
@@ -242,8 +242,9 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 | `/topics/[topicId]/learn`     | ✅     | Phase 2 — Interactive lesson player (AI explains → Inverted Teacher → Reverse Teaching → Quiz → Results, real session flow) |
 | `/topics/[topicId]/quiz`      | ❌     | Phase 3 — Standalone quiz (MCQ with instant feedback, score summary) |
 | `/settings`                   | ✅     | Profile editing, persona change, logout                       |
-| `/api/analyze`                | ✅     | POST — analyzes materials via Groq, returns `Island[]` (title, approach, key_concepts, probe_questions) |
-| `/api/chat`                   | ✅     | Groq streaming with session context + study materials + GPT-4o fallback |
+| `/api/account`                | ✅     | POST — deletes user's Storage files then removes auth user (cascade deletes all data). Requires `SUPABASE_SERVICE_ROLE_KEY` |
+| `/api/analyze`                | ✅     | POST — analyzes materials via Gemini 3.5 Flash, returns `Island[]` (title, approach, key_concepts, probe_questions) |
+| `/api/chat`                   | ✅     | Gemini streaming with session context + study materials |
 | `/api/sessions`               | ✅     | POST (create) + GET ?topic_id= (find latest in-progress)      |
 | `/api/sessions/[id]`          | ✅     | GET (session + messages)                                       |
 | `/api/sessions/[id]/checkpoint` | ✅   | PUT (update current_checkpoint)                                |
@@ -262,6 +263,8 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 - No loading skeletons — spinner-only loading states
 - No mobile responsiveness audit done yet
 - `/api/plan` is deprecated (replaced by `/api/analyze`) but still exists — should be removed in next cleanup
+- Account deletion requires `SUPABASE_SERVICE_ROLE_KEY` in `.env.local` — missing key returns 500
+- `supabase/migrations/007_storage_cleanup.sql` requires `pg_net` extension enabled in Supabase project (not available on free plan's Database Webhook)
 
 ## Migration History
 
@@ -278,6 +281,8 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 11. Tasks 4b-4e built — `useSessionPhaseManager` hook, session lifecycle API (`POST/GET /api/sessions`, `GET /api/sessions/[id]`, `PUT /api/sessions/[id]/checkpoint`, `POST /api/sessions/[id]/messages`), `/api/chat` enhanced with study materials + Lumi persona + GPT-4o fallback, learn page wired to real API, ProgressRoadmap reads real checkpoint, PDF text extraction on upload via `pdf-parse`. Migration `003_session_checkpoints.sql` added checkpoint columns + `topic_id` on quiz tables
 12. Exercise flow improvements — removed QuestionPrompt ("Van kérdésed?" interrupt), plan generation moved to background (no longer displayed to user), phase context injected on every AI call via `phaseInstruction`, fixed explain phase looping, session status set to "completed" on finish, save error handling, derived CompletionScreen stats, consistent materials upload UI (no layout shift)
 13. Island-based restructuring — replaced rigid 7-step template with dynamic island analysis (`/api/analyze`). Each island = interactive teaching (scenario/socratic/conversational) → Inverted Teacher probe → 6-question mini-quiz on key_concepts. `useSessionPhaseManager` now accepts dynamic islandTitles array. After each island's mini-quiz, checkpoint saved + user returns to roadmap. `/api/quiz/generate` supports scoped generation (`keyConcepts`, `questionCount`). `ProgressRoadmap` shows island titles below circles. Removed global quiz step from session structure.
+14. **F6 — Gemini migration:** replaced Groq/OpenAI with `@google/generative-ai`, model `gemini-3.5-flash`, Hungarian prompts across all AI routes, `BLOCK_ONLY_HIGH` safety settings, try/catch around `generateContent()` + `JSON.parse`, fixed `completeJson` empty-contents bug, `generateContentStream` fix for `{ stream }` syntax
+15. **F7 — Account deletion:** `DELETE /api/account` endpoint (deletes Storage files → `auth.users`), `getAdminClient()` service-role helper in `lib/supabase-server.ts`, "Fiók törlése" button + ConfirmModal with `disabled` prop in `/settings`, `supabase/migrations/007_storage_cleanup.sql` (pg_net trigger for Storage cleanup on `study_materials` row deletion)
 
 ## Getting Started
 

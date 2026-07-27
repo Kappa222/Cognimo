@@ -4,7 +4,7 @@
 
 - Landing page — Hero, features, CTA
 - DB schema — 10 tables with RLS
-- AI API — Groq streaming (OpenAI-compatible)
+- AI API — Gemini 3.5 Flash streaming (@google/generative-ai SDK)
 - Auth — email/password, profile creation on signup
 - Auth middleware (`proxy.ts`) — protect `/dashboard`, `/subjects`, `/topics`, `/settings`, `/setup-profile`
 - Auth callback route (`/auth/callback`)
@@ -37,7 +37,7 @@
 ### Task 3.5 — Learning Plan → Island Analysis (Replaced ✅)
 
 - **Old:** `/api/plan` generated a structured learning plan (now deprecated)
-- **New:** `/api/analyze` — analyzes study materials via Groq (GPT-4o fallback), splits into logical islands. Each island has: title, approach (scenario/socratic/conversational), key_concepts[], probe_questions[]
+- **New:** `/api/analyze` — analyzes study materials via Gemini 3.5 Flash, splits into logical islands. Each island has: title, approach (scenario/socratic/conversational), key_concepts[], probe_questions[]
 - Islands stored as `__ISLANDS__:` message in session — parsed on resume
 - `/api/plan` kept for backward compatibility but no longer used by the learn page
 
@@ -91,7 +91,7 @@ This is the core of Cognimo — an island-based interactive lesson player, not a
 - Lumi system prompt hardcoded in `/api/chat` (no DB dependency)
 - Study materials injected as system prompt with explicit "use as primary source" directive
 - PDF text extraction on upload via `pdf-parse` (stored in `content` column)
-- AI provider fallback: if Groq fails/times out, retry with OpenAI SDK (GPT-4o)
+- AI provider: Gemini 3.5 Flash
 - Per-island phase instruction passed via `phaseInstruction` field — includes approach guide + key_concepts for teaching, probe_questions for Inverted Teacher
 - Teaching instruction explicitly scoped: "Csak a(z) 'Island Title' részhez tartozó kulcsfogalmakat fedd le. NE említs más részeket vagy későbbi témákat. Ne tegyél fel kérdéseket — csak magyarázz."
 - `islandStep` ("teach" | "probe" | "mini-quiz") tracked client-side to select the correct instruction for each AI call
@@ -168,7 +168,7 @@ This is the core of Cognimo — an island-based interactive lesson player, not a
 
 - End-to-end testing — critical flows: signup → setup → create topic → add material → start learn session → complete quiz
 - Component testing — AIBubble, QuizQuestion, ConfirmModal, ProgressRoadmap, CompletionScreen
-- Error monitoring — log AI API failures (Groq, OpenAI fallback), storage upload errors
+- Error monitoring — log AI API failures (Gemini), storage upload errors
 - Performance audit — bundle size, lazy loading, image optimization, streaming renderer efficiency
 - Production deploy — environment config, secrets, Supabase project setup
 
@@ -179,5 +179,6 @@ This is the core of Cognimo — an island-based interactive lesson player, not a
 These aren't phases — they're maintained across all phases:
 
 - **Schema migrations** — `study-app/supabase/migrations/` folder with numbered SQL files (one per schema change); `schema.sql` is always the canonical single-source-of-truth
-- **API contract** — every endpoint (`/api/chat`, `/api/sessions`, `/api/materials`, `/api/topics`) has its expected request/response shape documented in the route file header comment
+- **API contract** — every endpoint (`/api/chat`, `/api/sessions`, `/api/materials`, `/api/topics`, `/api/account`) has its expected request/response shape documented in the route file header comment
+- **Service role key** — `SUPABASE_SERVICE_ROLE_KEY` required in `.env.local` for account deletion (`DELETE /api/account`); `pg_net` extension required for automatic Storage cleanup on `study_materials` row deletion (`migration 007`)
 - **Subjects setup** — created via Supabase dashboard or seed script; no user-facing CRUD for subjects (fixed set)
