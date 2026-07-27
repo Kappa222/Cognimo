@@ -119,6 +119,18 @@ This is the core of Cognimo — an island-based interactive lesson player, not a
 - Replace placeholder buttons on subject detail page with links
 - Character descriptions localized to Hungarian
 
+### Task 7 — Gemini Migration (F6) ✅
+- Replaced Groq/OpenAI SDK with `@google/generative-ai` — model `gemini-3.5-flash`
+- Hungarian prompts across all AI routes (`/api/analyze`, `/api/chat`, `/api/evaluate`, `/api/plan`, `/api/quiz/generate`)
+- `BLOCK_ONLY_HIGH` safety settings, try/catch around `generateContent()` + `JSON.parse`
+- Fixed `completeJson` empty-contents bug + `generateContentStream` destructuring
+
+### Task 8 — Account Deletion (F7) ✅
+- `DELETE /api/account` — deletes Storage files → removes auth user (cascade deletes all data)
+- `getAdminClient()` service-role helper in `lib/supabase-server.ts`
+- "Fiók törlése" button + ConfirmModal with `disabled` prop in `/settings`
+- `supabase/migrations/007_storage_cleanup.sql` — pg_net trigger for Storage cleanup on `study_materials` row deletion
+
 ---
 
 ## Phase 3 — Assessment
@@ -178,7 +190,7 @@ This is the core of Cognimo — an island-based interactive lesson player, not a
 
 These aren't phases — they're maintained across all phases:
 
-- **Schema migrations** — `study-app/supabase/migrations/` folder with numbered SQL files (one per schema change); `schema.sql` is always the canonical single-source-of-truth
+- **Schema migrations** — `study-app/supabase/migrations/` folder with numbered SQL files (one per schema change); `schema.sql` is always the canonical single-source-of-truth. Current migrations: `001` (session checkpoints), `002`–`006` (island/assessment schema), `007_storage_cleanup.sql` (pg_net Storage cleanup trigger)
 - **API contract** — every endpoint (`/api/chat`, `/api/sessions`, `/api/materials`, `/api/topics`, `/api/account`) has its expected request/response shape documented in the route file header comment
 - **Service role key** — `SUPABASE_SERVICE_ROLE_KEY` required in `.env.local` for account deletion (`DELETE /api/account`); `pg_net` extension required for automatic Storage cleanup on `study_materials` row deletion (`migration 007`)
 - **Subjects setup** — created via Supabase dashboard or seed script; no user-facing CRUD for subjects (fixed set)
