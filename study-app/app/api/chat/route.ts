@@ -2,7 +2,7 @@ import { createClient } from "../../../lib/supabase-server";
 import { streamChat } from "../../../lib/ai";
 
 const LUMI_SYSTEM_PROMPT =
-  "You are Lumi, a friendly and encouraging study partner. Your goal is to help the user understand the topic they are studying. Explain concepts clearly, ask questions to check understanding, and provide examples. Be patient, supportive, and adapt to the user's level of knowledge. Respond in Hungarian.";
+  "Te vagy Lumi, egy barátságos és bátorító tanulótárs. A célod, hogy segíts a felhasználónak megérteni a tanult témát. Magyarázd el a fogalmakat érthetően, tegyél fel kérdéseket a megértés ellenőrzésére, és adj példákat. Légy türelmes, támogató, és alkalmazkodj a felhasználó tudásszintjéhez. Válaszolj magyarul.";
 
 async function buildSystemPrompt(sessionId: string): Promise<string> {
   const supabase = await createClient();
@@ -31,7 +31,7 @@ async function buildSystemPrompt(sessionId: string): Promise<string> {
         .join("\n\n---\n\n");
       if (materialText) {
         parts.push(
-          "Use the following study materials as the primary source of information. Base your explanations, examples, and answers on these materials. Prioritize them over your general knowledge.\n\n" +
+          "Használd a következő tananyagokat elsődleges információforrásként. A magyarázataidat, példáidat és válaszaidat ezekre az anyagokra alapozd. Részesítsd előnyben őket az általános tudásoddal szemben.\n\n" +
           materialText
         );
       }

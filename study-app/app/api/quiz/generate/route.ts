@@ -1,20 +1,17 @@
 import { createClient } from "../../../../lib/supabase-server";
-import OpenAI from "openai";
+import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
 
-const GROQ_MODEL = "llama-3.3-70b-versatile";
-const FALLBACK_MODEL = "gpt-4o";
+const MODEL = "gemini-3.5-flash";
 
-function getGroqClient() {
-  return new OpenAI({
-    baseURL: "https://api.groq.com/openai/v1",
-    apiKey: process.env.GROQ_API_KEY!,
-  });
-}
+const SAFETY_SETTINGS = [
+  { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+  { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+  { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+  { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+];
 
-function getOpenAIClient() {
-  return new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-  });
+function getGeminiClient() {
+  return new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 }
 
 export async function POST(req: Request) {
@@ -42,22 +39,22 @@ export async function POST(req: Request) {
   const isScoped = !!keyConcepts && keyConcepts.length > 0;
 
   const systemPrompt =
-    `You are Lumi, a friendly study partner. Create exactly ${count} multiple-choice quiz questions in Hungarian based on the provided study materials.\n\n` +
-    "Each question must:\n" +
-    "- Be related to the topic and study materials\n" +
-    "- Have exactly 4 options (A, B, C, D)\n" +
-    "- Have exactly one correct answer\n" +
-    "- Be appropriate for testing understanding\n\n" +
-    "Return ONLY a valid JSON array. No markdown, no code fences, no extra text.\n" +
-    'Format: [{"text": "question text", "options": ["option1", "option2", "option3", "option4"], "correctIndex": 0}]';
+    `Te vagy Lumi, egy barátságos tanulótárs. Készíts pontosan ${count} feleletválasztós kvízkérdést magyar nyelven a megadott tananyagok alapján.\n\n` +
+    "Minden kérdésnek meg kell felelnie az alábbiaknak:\n" +
+    "- Kapcsolódjon a témához és a tananyagokhoz\n" +
+    "- Pontosan 4 opciója legyen (A, B, C, D)\n" +
+    "- Pontosan egy helyes válasza legyen\n" +
+    "- A megértés tesztelésére alkalmas legyen\n\n" +
+    "Csak egy érvényes JSON tömböt adj vissza. Markdown, kódblokk vagy extra szöveg nélkül.\n" +
+    'Formátum: [{"text": "kérdés szövege", "options": ["opció1", "opció2", "opció3", "opció4"], "correctIndex": 0}]';
 
   const parts: string[] = [systemPrompt];
 
   if (isScoped) {
     parts.push(
-      `The questions should focus specifically on the following sub-topic: "${islandTitle ?? "(unnamed section)"}"\n` +
-      `Key concepts to cover: ${keyConcepts.join(", ")}.\n` +
-      "Do NOT ask about topics outside these concepts."
+      `A kérdések kifejezetten a következő altémára összpontosítsanak: "${islandTitle ?? "(névtelen szekció)"}"\n` +
+      `Kulcsfogalmak, amelyeket le kell fedni: ${keyConcepts.join(", ")}.\n` +
+      "Ne kérdezz a fogalmakon kívüli témákról."
     );
   }
 
@@ -66,24 +63,39 @@ export async function POST(req: Request) {
       .map((m) => `--- ${m.title} ---\n${m.content}`)
       .join("\n\n");
     parts.push(
-      "Base the quiz questions on the following study materials:\n\n" + materialText
+      "A kvízkérdéseket a következő tananyagok alapján állítsd össze:\n\n" + materialText
     );
   }
 
-  parts.push('Create quiz questions for the topic "' + (topic?.name ?? 'this topic') + '".');
+  parts.push('Készíts kvízkérdéseket a következő témához: "' + (topic?.name ?? 'ez a téma') + '".');
 
   const fullPrompt = parts.join("\n\n");
-  const messages = [{ role: "system" as const, content: fullPrompt }];
+
+  const genAI = getGeminiClient();
+  const model = genAI.getGenerativeModel({
+    model: MODEL,
+    safetySettings: SAFETY_SETTINGS,
+    generationConfig: {
+      responseMimeType: "application/json",
+    },
+  });
 
   try {
-    const groq = getGroqClient();
-    const completion = await groq.chat.completions.create({
-      model: GROQ_MODEL,
-      messages,
-      response_format: { type: "json_object" },
+    const result = await model.generateContent({
+      contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
     });
 
-    const content = completion.choices[0]?.message?.content;
+    let content: string;
+    try {
+      content = result.response.text();
+    } catch {
+      const feedback = result.response.promptFeedback;
+      const blockReason = feedback?.blockReason;
+      const finishReason = result.response.candidates?.[0]?.finishReason;
+      console.error("Gemini response blocked", { blockReason, finishReason, promptFeedback: feedback });
+      return new Response("AI service unavailable", { status: 503 });
+    }
+
     if (!content) throw new Error("Empty response");
 
     const parsed = JSON.parse(content);
@@ -92,33 +104,8 @@ export async function POST(req: Request) {
     return new Response(JSON.stringify(questions), {
       headers: { "Content-Type": "application/json" },
     });
-  } catch (groqError) {
-    console.error("Groq quiz generation error, falling back:", groqError);
-
-    if (!process.env.OPENAI_API_KEY) {
-      return new Response("AI service unavailable", { status: 503 });
-    }
-
-    try {
-      const openai = getOpenAIClient();
-      const completion = await openai.chat.completions.create({
-        model: FALLBACK_MODEL,
-        messages,
-        response_format: { type: "json_object" },
-      });
-
-      const content = completion.choices[0]?.message?.content;
-      if (!content) throw new Error("Empty response");
-
-      const parsed = JSON.parse(content);
-      const questions = Array.isArray(parsed) ? parsed : parsed.questions ?? parsed.quiz ?? [];
-
-      return new Response(JSON.stringify(questions), {
-        headers: { "Content-Type": "application/json" },
-      });
-    } catch (fallbackError) {
-      console.error("Fallback OpenAI quiz generation error:", fallbackError);
-      return new Response("AI service unavailable", { status: 503 });
-    }
+  } catch (err) {
+    console.error("Gemini quiz generation error:", err);
+    return new Response("AI service unavailable", { status: 503 });
   }
 }

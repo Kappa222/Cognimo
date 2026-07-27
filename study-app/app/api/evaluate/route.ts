@@ -24,7 +24,7 @@ Adj továbbá:
 - "feedback_hint": max. 2 mondat magyarul — mire reagáljon a tanuló AI (mit értett meg jól, hol a hiba)
 - "next_focus": a még nem igazolt fogalmak közül az, amelyikre a következő kérdésnek irányulnia kell (vagy null, ha minden igazolt)
 
-Return ONLY valid JSON:
+Csak érvényes JSON-t adj vissza:
 {"verdicts":[{"concept":"...","verdict":"correct|partial|wrong|missing|not_required"}],
  "feedback_hint":"...", "next_focus":"...|null"}`;
 

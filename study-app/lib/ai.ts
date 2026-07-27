@@ -1,104 +1,107 @@
-import OpenAI from "openai";
+import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
 
-const GROQ_MODEL = "llama-3.3-70b-versatile";
-const FALLBACK_MODEL = "gpt-4o";
+const MODEL = "gemini-3.5-flash";
 
-function getGroqClient() {
-  return new OpenAI({
-    baseURL: "https://api.groq.com/openai/v1",
-    apiKey: process.env.GROQ_API_KEY!,
-  });
+const SAFETY_SETTINGS = [
+  { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+  { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+  { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+  { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+];
+
+function getGeminiClient() {
+  return new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 }
 
-function getOpenAIClient() {
-  return new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-  });
-}
-
-async function withFallback<T>(primary: () => Promise<T>, fallback: () => Promise<T>): Promise<T> {
-  try {
-    return await primary();
-  } catch (err) {
-    console.error("Primary AI call failed, falling back:", err);
-    if (!process.env.OPENAI_API_KEY) throw err;
-    return await fallback();
-  }
+function toGeminiMessages(
+  messages: { role: string; content: string }[],
+): { role: "user" | "model"; parts: { text: string }[] }[] {
+  return messages.map((m) => ({
+    role: m.role === "assistant" ? "model" : ("user" as "user" | "model"),
+    parts: [{ text: m.content }],
+  }));
 }
 
 export async function completeJson(
   messages: { role: "system" | "user" | "assistant"; content: string }[],
 ): Promise<unknown> {
-  const result = await withFallback(
-    async () => {
-      const groq = getGroqClient();
-      const completion = await groq.chat.completions.create({
-        model: GROQ_MODEL,
-        messages,
-        response_format: { type: "json_object" },
-      });
-      return completion.choices[0]?.message?.content ?? "";
-    },
-    async () => {
-      const openai = getOpenAIClient();
-      const completion = await openai.chat.completions.create({
-        model: FALLBACK_MODEL,
-        messages,
-        response_format: { type: "json_object" },
-      });
-      return completion.choices[0]?.message?.content ?? "";
-    },
-  );
+  const genAI = getGeminiClient();
+  const firstIsSystem = messages[0]?.role === "system";
 
-  if (!result) throw new Error("Empty response from AI");
-  return JSON.parse(result);
+  let systemMessage: string | undefined;
+  let geminiMessages: { role: "user" | "model"; parts: { text: string }[] }[];
+
+  if (firstIsSystem) {
+    systemMessage = messages[0].content;
+    geminiMessages = toGeminiMessages(messages.slice(1));
+  } else {
+    geminiMessages = toGeminiMessages(messages);
+  }
+
+  if (geminiMessages.length === 0) {
+    geminiMessages = [{ role: "user", parts: [{ text: systemMessage! }] }];
+    systemMessage = undefined;
+  }
+
+  const model = genAI.getGenerativeModel({
+    model: MODEL,
+    ...(systemMessage ? { systemInstruction: systemMessage } : {}),
+    safetySettings: SAFETY_SETTINGS,
+    generationConfig: {
+      responseMimeType: "application/json",
+    },
+  });
+
+  let result;
+  try {
+    result = await model.generateContent({ contents: geminiMessages });
+  } catch (e) {
+    console.error("Gemini API error:", e);
+    throw new Error(`AI service error: ${(e as Error).message}`);
+  }
+
+  let text: string;
+  try {
+    text = result.response.text();
+  } catch {
+    const feedback = result.response.promptFeedback;
+    const blockReason = feedback?.blockReason;
+    const finishReason = result.response.candidates?.[0]?.finishReason;
+    console.error("Gemini response blocked", { blockReason, finishReason });
+    throw new Error(`AI response blocked: ${blockReason ?? finishReason ?? "unknown"}`);
+  }
+
+  if (!text) throw new Error("Empty response from AI");
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    console.error("Gemini JSON parse error:", text.substring(0, 200));
+    throw new Error("AI response was not valid JSON");
+  }
 }
 
 export async function streamChat(
   messages: { role: string; content: string }[],
   systemPrompt: string,
 ): Promise<ReadableStream> {
-  try {
-    const groq = getGroqClient();
-    const stream = await groq.chat.completions.create({
-      model: GROQ_MODEL,
-      messages: [
-        { role: "system", content: systemPrompt },
-        ...messages.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
-      ],
-      stream: true,
-    });
+  const genAI = getGeminiClient();
+  const model = genAI.getGenerativeModel({
+    model: MODEL,
+    systemInstruction: systemPrompt,
+    safetySettings: SAFETY_SETTINGS,
+  });
 
-    return new ReadableStream({
-      async start(controller) {
-        for await (const chunk of stream) {
-          const text = chunk.choices[0]?.delta?.content || "";
-          if (text) controller.enqueue(text);
-        }
-        controller.close();
-      },
-    });
-  } catch (groqError) {
-    console.error("Groq stream error, falling back:", groqError);
-    if (!process.env.OPENAI_API_KEY) throw groqError;
-    const openai = getOpenAIClient();
-    const stream = await openai.chat.completions.create({
-      model: FALLBACK_MODEL,
-      messages: [
-        { role: "system", content: systemPrompt },
-        ...messages.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
-      ],
-      stream: true,
-    });
+  const geminiMessages = toGeminiMessages(messages);
+  const streamResult = await model.generateContentStream({ contents: geminiMessages });
 
-    return new ReadableStream({
-      async start(controller) {
-        for await (const chunk of stream) {
-          const text = chunk.choices[0]?.delta?.content || "";
-          if (text) controller.enqueue(text);
-        }
-        controller.close();
-      },
-    });
-  }
+  return new ReadableStream({
+    async start(controller) {
+      for await (const chunk of streamResult.stream) {
+        const text = chunk.text();
+        if (text) controller.enqueue(text);
+      }
+      controller.close();
+    },
+  });
 }

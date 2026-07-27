@@ -10,9 +10,9 @@ const SYSTEM_PROMPT =
   '- "conversational": Magyarázz természetesen, miközben bevonod a felhasználót. Legjobb elbeszélésekhez, életrajzokhoz, leíró tartalomhoz.\n\n' +
   "Minden egységből emelj ki 2-3 kulcsfogalmat, amelyeket feltétlenül le kell fedni.\n" +
   "Minden egységhez generálj 2-3 próbakérdést a fordított tanár módszerhez — olyan kérdéseket, amelyek tesztelik, hogy a felhasználó valóban megértette-e, úgy megfogalmazva, mintha Lumi nem értené és segítségre szorulna.\n\n" +
-  "All output values (titles, key_concepts, probe_questions) MUST be in Hungarian, regardless of the language of the study materials.\n\n" +
-  'Return ONLY a valid JSON object with an "islands" array. No markdown, no code fences.\n' +
-  'Format: {"islands": [{"title": "...", "approach": "scenario|socratic|conversational", "key_concepts": ["...", "..."], "probe_questions": ["...?", "...?"]}]}';
+  "Minden kimeneti érték (titles, key_concepts, probe_questions) magyarul legyen, függetlenül a tananyagok nyelvétől.\n\n" +
+  'Csak egy érvényes JSON objektumot adj vissza "islands" tömbbel. Markdown, kódblokk nélkül.\n' +
+  'Formátum: {"islands": [{"title": "...", "approach": "scenario|socratic|conversational", "key_concepts": ["...", "..."], "probe_questions": ["...?", "...?"]}]}';
 
 export async function POST(req: Request) {
   const supabase = await createClient();
@@ -40,10 +40,10 @@ export async function POST(req: Request) {
     const materialText = materials
       .map((m) => "--- " + m.title + " ---\n" + m.content)
       .join("\n\n");
-    parts.push("Analyze the following study materials:\n\n" + materialText);
+    parts.push("Elemezd a következő tananyagokat:\n\n" + materialText);
   }
 
-  parts.push('Create a learning plan for the topic: "' + (topic?.name ?? "this topic") + '".');
+  parts.push('Készíts tanulási tervet a következő témához: "' + (topic?.name ?? "ez a téma") + '".');
 
   const fullPrompt = parts.join("\n\n");
   const messages = [{ role: "system" as const, content: fullPrompt }];
