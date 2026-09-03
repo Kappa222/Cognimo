@@ -1,40 +1,35 @@
 import { createClient } from "../../../lib/supabase-server";
 import { streamChat } from "../../../lib/ai";
+import { getIslandContext } from "../../../lib/chunks";
 
 const LUMI_SYSTEM_PROMPT =
   "Te vagy Lumi, egy barátságos és bátorító tanulótárs. A célod, hogy segíts a felhasználónak megérteni a tanult témát. Magyarázd el a fogalmakat érthetően, tegyél fel kérdéseket a megértés ellenőrzésére, és adj példákat. Légy türelmes, támogató, és alkalmazkodj a felhasználó tudásszintjéhez. Válaszolj magyarul.";
 
-async function buildSystemPrompt(sessionId: string): Promise<string> {
+async function buildSystemPrompt(sessionId: string, islandTitle?: string): Promise<string> {
   const supabase = await createClient();
 
   const parts: string[] = [LUMI_SYSTEM_PROMPT];
 
   const { data: session } = await supabase
     .from("chat_sessions")
-    .select("topic_id")
+    .select("topic_id, plan")
     .eq("id", sessionId)
     .single();
 
   if (!session) return parts.join("\n\n");
 
   if (session.topic_id) {
-    const { data: materials } = await supabase
-      .from("study_materials")
-      .select("content")
-      .eq("topic_id", session.topic_id)
-      .not("content", "is", null);
-
-    if (materials && materials.length > 0) {
-      const materialText = materials
-        .map((m) => m.content)
-        .filter(Boolean)
-        .join("\n\n---\n\n");
-      if (materialText) {
-        parts.push(
-          "Használd a következő tananyagokat elsődleges információforrásként. A magyarázataidat, példáidat és válaszaidat ezekre az anyagokra alapozd. Részesítsd előnyben őket az általános tudásoddal szemben.\n\n" +
-          materialText
-        );
-      }
+    // Scoped retrieval: only the current island's chunks on large documents,
+    // capped full text otherwise (small docs and legacy sessions).
+    const materialText = await getIslandContext(supabase, session.topic_id, {
+      islandTitle,
+      plan: (session as { plan?: unknown }).plan,
+    });
+    if (materialText) {
+      parts.push(
+        "Használd a következő tananyagokat elsődleges információforrásként. A magyarázataidat, példáidat és válaszaidat ezekre az anyagokra alapozd. Részesítsd előnyben őket az általános tudásoddal szemben.\n\n" +
+        materialText
+      );
     }
   }
 
@@ -46,13 +41,13 @@ export async function POST(req: Request) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return new Response("Unauthorized", { status: 401 });
 
-  const { sessionId, messages, phaseInstruction } = await req.json();
+  const { sessionId, messages, phaseInstruction, islandTitle } = await req.json();
 
   if (!sessionId || !messages) {
     return new Response("sessionId and messages required", { status: 400 });
   }
 
-  let systemPrompt = await buildSystemPrompt(sessionId);
+  let systemPrompt = await buildSystemPrompt(sessionId, islandTitle);
   if (phaseInstruction) {
     systemPrompt += `\n\n${phaseInstruction}`;
   }

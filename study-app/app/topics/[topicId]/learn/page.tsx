@@ -205,6 +205,7 @@ export default function LearnPage() {
   const streamAIResponse = useCallback(async (
     history: { role: string; content: string }[],
     phaseInstruction?: string,
+    islandTitle?: string,
   ) => {
     if (!session) return;
     setIsStreaming(true);
@@ -216,7 +217,7 @@ export default function LearnPage() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: session.id, messages: history, phaseInstruction }),
+        body: JSON.stringify({ sessionId: session.id, messages: history, phaseInstruction, islandTitle }),
         signal: abortRef.current.signal,
       });
 
@@ -373,7 +374,7 @@ export default function LearnPage() {
           role: "user" as const,
           content: `A felhasználó ezt a témát szeretné megtanulni: "${topic?.name ?? "ismeretlen téma"}". Kezdd el a tanulást a tananyag és a fázis-instrukció alapján, magyarul.`,
         }];
-    await streamAIResponse(apiMessages, instruction);
+    await streamAIResponse(apiMessages, instruction, currentIsland?.title);
   }, [streamAIResponse, topic, phase, islands, islandStep]);
 
   useEffect(() => {

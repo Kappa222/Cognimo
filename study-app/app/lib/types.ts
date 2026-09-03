@@ -80,6 +80,7 @@ export interface Island {
   approach: "scenario" | "socratic" | "conversational";
   key_concepts: string[];
   probe_questions: string[];
+  chunk_indices?: number[];
 }
 
 export interface CompletionStats {

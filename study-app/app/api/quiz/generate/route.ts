@@ -1,5 +1,6 @@
 import { createClient } from "../../../../lib/supabase-server";
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
+import { getIslandContext } from "../../../../lib/chunks";
 
 const MODEL = "gemini-3.5-flash";
 
@@ -30,11 +31,22 @@ export async function POST(req: Request) {
     .eq("id", topicId)
     .single();
 
-  const { data: materials } = await supabase
-    .from("study_materials")
-    .select("content, title")
+  // Scoped retrieval: the island's chunks on large documents (via the latest
+  // session plan), keyword-matched or capped full text otherwise.
+  const { data: planSession } = await supabase
+    .from("chat_sessions")
+    .select("plan")
     .eq("topic_id", topicId)
-    .not("content", "is", null);
+    .not("plan", "is", null)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const materialText = await getIslandContext(supabase, topicId, {
+    islandTitle,
+    keyConcepts,
+    plan: (planSession as { plan?: unknown } | null)?.plan,
+  });
 
   const isScoped = !!keyConcepts && keyConcepts.length > 0;
 
@@ -58,10 +70,7 @@ export async function POST(req: Request) {
     );
   }
 
-  if (materials && materials.length > 0) {
-    const materialText = materials
-      .map((m) => `--- ${m.title} ---\n${m.content}`)
-      .join("\n\n");
+  if (materialText) {
     parts.push(
       "A kvízkérdéseket a következő tananyagok alapján állítsd össze:\n\n" + materialText
     );

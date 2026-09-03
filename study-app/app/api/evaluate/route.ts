@@ -1,5 +1,6 @@
 import { createClient } from "../../../lib/supabase-server";
 import { completeJson } from "../../../lib/ai";
+import { getIslandContext } from "../../../lib/chunks";
 
 const EVALUATE_SYSTEM_PROMPT = `Te egy szigorú, de igazságos szakmai értékelő vagy. A felhasználó egy "fordított tanár" gyakorlatban tanít: elmagyaráz valamit egy tanuló AI-nak. A feladatod: minősítsd a magyarázatot KIZÁRÓLAG a megadott kulcsfogalmak szempontjából.
 
@@ -90,11 +91,33 @@ export async function POST(req: Request) {
     return new Response("Missing required fields", { status: 400 });
   }
 
-  const systemPrompt = EVALUATE_SYSTEM_PROMPT
+  const systemPromptBase = EVALUATE_SYSTEM_PROMPT
     .replace("{keyConcepts}", JSON.stringify(keyConcepts))
     .replace("{provenConcepts}", JSON.stringify(provenConcepts ?? []))
     .replace("{question}", question)
     .replace("{userAnswer}", userAnswer);
+
+  // Scoped reference: the island's chunks ground the verdicts on large
+  // documents; capped full text otherwise. Absent on failure (judge on
+  // concepts alone, as before).
+  let systemPrompt = systemPromptBase;
+  try {
+    const { data: session } = await supabase
+      .from("chat_sessions")
+      .select("plan")
+      .eq("id", sessionId)
+      .single();
+    const reference = await getIslandContext(supabase, topicId, {
+      islandTitle,
+      keyConcepts,
+      plan: (session as { plan?: unknown } | null)?.plan,
+    });
+    if (reference) {
+      systemPrompt += "\n\nReferencia tananyagrészlet a döntéshez (erre alapozd az ítéleteket):\n\n" + reference;
+    }
+  } catch (err) {
+    console.error("Evaluate context load failed:", err);
+  }
 
   const messages = [{ role: "system" as const, content: systemPrompt }];
 

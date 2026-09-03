@@ -25,9 +25,16 @@
 - Add `topic_id` column to `study_materials` table (migration)
 - Create `/topics/[topicId]/materials` page
 - Create `/api/materials` endpoint (CRUD)
-- PDF upload to Supabase storage + text paste input
+- PDF upload to Supabase storage + text paste input (max 25 MB / 300 pages, Hungarian errors)
+- Extraction warning badge when PDF text is unreadable (e.g. scanned documents)
 - List materials per topic with delete option
 - Storage cleanup when material deleted
+
+### Task 2.5 — Large-Document Scale-up (F10–F13) ✅
+- `material_chunks` table (migration `008`) — overlapping ~6k-char slices written at upload
+- Two-stage `/api/analyze`: small corpora single-pass (unchanged); large corpora summarized per batch, islands built from summaries, island→chunk mapping (`chunk_indices`) computed deterministically in code
+- Scoped injection: `chat` / `evaluate` / `quiz/generate` load only the island's chunks via `getIslandContext()` (keyword + capped full-text fallback for small docs and legacy sessions)
+- Learn page sends `islandTitle` with `/api/chat` calls
 
 ### Task 3 — Topic Detail Page ✅
 - Create `/topics/[topicId]` page
@@ -201,7 +208,7 @@ This is the core of Cognimo — an island-based interactive lesson player, not a
 
 These aren't phases — they're maintained across all phases:
 
-- **Schema migrations** — `study-app/supabase/migrations/` folder with numbered SQL files (one per schema change); `schema.sql` is always the canonical single-source-of-truth. Current migrations: `003` (session checkpoints), `004` (concept_mastery), `005` (session_plan), `006` (resume_state), `007_storage_cleanup.sql` (pg_net Storage cleanup trigger)
+- **Schema migrations** — `study-app/supabase/migrations/` folder with numbered SQL files (one per schema change); `schema.sql` is always the canonical single-source-of-truth. Current migrations: `003` (session checkpoints), `004` (concept_mastery), `005` (session_plan), `006` (resume_state), `007_storage_cleanup.sql` (pg_net Storage cleanup trigger), `008_material_chunks.sql` (per-island retrieval slices)
 - **API contract** — every endpoint (`/api/chat`, `/api/sessions`, `/api/materials`, `/api/topics`, `/api/account`) has its expected request/response shape documented in the route file header comment
 - **Service role key** — `SUPABASE_SERVICE_ROLE_KEY` required in `.env.local` for account deletion (`DELETE /api/account`); `pg_net` extension required for automatic Storage cleanup on `study_materials` row deletion (`migration 007`)
 - **Subjects setup** — created via Supabase dashboard or seed script; no user-facing CRUD for subjects (fixed set)

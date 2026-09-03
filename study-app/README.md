@@ -63,6 +63,7 @@ study-app/
 │   └── settings/                  — Profile editing + account deletion
 ├── lib/
 │   ├── ai.ts                      — Gemini client (completeJson, streamChat) — use this for all AI calls
+│   ├── chunks.ts                  — Text chunking + per-island retrieval (getIslandContext) for large documents
 │   └── supabase-server.ts         — createClient + getAdminClient (service-role)
 ├── supabase/migrations/           — Numbered SQL files (0XX_*.sql)
 ├── public/avatars/                — SVG avatars
@@ -99,6 +100,7 @@ Error handling: wrap `generateContent()` and `JSON.parse` in try/catch. Use `cat
 | `subjects`        | —                                                                | Global (3 seeded rows: Matematika, Történelem, Irodalom)            |
 | `topics`          | user_id → profiles, subject_id → subjects                        | Per-user CRUD                                                       |
 | `study_materials` | user_id → profiles, topic_id → topics                            | PDF (Supabase Storage) or text input                                |
+| `material_chunks` | material_id → study_materials                                    | Overlapping text slices for per-island retrieval on large documents |
 | `characters`      | —                                                                | Global (Lumi seeded, Hungarian description)                         |
 | `chat_sessions`   | user_id → profiles, topic_id → topics                            | Tracks `status`, `current_checkpoint`, `total_checkpoints`; resumable |
 | `chat_messages`   | session_id → chat_sessions                                       | role check (user/assistant)                                         |
@@ -325,6 +327,10 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 14. **F6 — Gemini migration:** replaced Groq/OpenAI with `@google/generative-ai`, model `gemini-3.5-flash`, Hungarian prompts across all AI routes, `BLOCK_ONLY_HIGH` safety settings, try/catch around `generateContent()` + `JSON.parse`, fixed `completeJson` empty-contents bug, `generateContentStream` fix for `{ stream }` syntax
 15. **F7 — Account deletion:** `DELETE /api/account` endpoint (deletes Storage files → `auth.users`), `getAdminClient()` service-role helper in `lib/supabase-server.ts`, "Fiók törlése" button + ConfirmModal with `disabled` prop in `/settings`, `supabase/migrations/007_storage_cleanup.sql` (pg_net trigger for Storage cleanup on `study_materials` row deletion)
 16. **F9 — Cleanup & health:** removed deprecated `/api/plan` route + unused `LearningPlan` / `QuestionPrompt` components, removed default Next.js SVG leftovers from `public/`, fixed `lint` script (`eslint` → `eslint .`)
+17. **F10 — Chunking foundation:** `material_chunks` table (migration `008` + `schema.sql`), `lib/chunks.ts` helpers (`chunkText`, `capText`, `getIslandContext`)
+18. **F11 — Upload hardening:** PDF validation (25 MB / 300 pages, Hungarian errors), chunk writes on upload, `SHORT_EXTRACTION` warning banner + persistent "Nem olvasható" badge on materials page
+19. **F12 — Two-stage analysis:** large corpora summarized per batch then islands built from summaries, deterministic island→chunk mapping (`chunk_indices` on `Island`, stored in session `plan`); small corpora unchanged single-pass
+20. **F13 — Scoped injection:** `chat` / `evaluate` / `quiz/generate` load only the island's chunks (keyword + capped full-text fallback); learn page sends `islandTitle` with chat calls
 
 ## Getting Started
 
