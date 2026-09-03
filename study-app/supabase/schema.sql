@@ -142,6 +142,34 @@ create trigger trg_study_materials_user_id
   execute function set_user_id();
 
 -- ============================================================
+-- 4b. material_chunks (text slices for large-document scale-up)
+-- ============================================================
+create table material_chunks (
+  id uuid primary key default gen_random_uuid(),
+  material_id uuid not null references study_materials(id) on delete cascade,
+  user_id uuid not null references profiles(id) on delete cascade,
+  idx int not null,
+  content text not null,
+  created_at timestamptz not null default now(),
+  unique (material_id, idx)
+);
+
+alter table material_chunks enable row level security;
+
+create policy "Users can CRUD their own material chunks"
+  on material_chunks for all
+  using (auth.uid() = user_id);
+
+create index idx_material_chunks_material_id on material_chunks(material_id);
+create index idx_material_chunks_user_id on material_chunks(user_id);
+
+drop trigger if exists trg_material_chunks_user_id on material_chunks;
+create trigger trg_material_chunks_user_id
+  before insert on material_chunks
+  for each row
+  execute function set_user_id();
+
+-- ============================================================
 -- 4. characters
 -- ============================================================
 create table characters (
