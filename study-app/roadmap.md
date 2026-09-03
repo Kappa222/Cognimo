@@ -38,10 +38,9 @@
 
 ### Task 3.5 — Learning Plan → Island Analysis (Replaced ✅)
 
-- **Old:** `/api/plan` generated a structured learning plan (now deprecated)
+- **Old:** `/api/plan` generated a structured learning plan (removed in F9 cleanup)
 - **New:** `/api/analyze` — analyzes study materials via Gemini 3.5 Flash, splits into logical islands. Each island has: title, approach (scenario/socratic/conversational), key_concepts[], probe_questions[]
 - Islands stored as `__ISLANDS__:` message in session — parsed on resume
-- `/api/plan` kept for backward compatibility but no longer used by the learn page
 - `/api/evaluate` — POST endpoint for Inverted Teacher assessment scoring, called after probe phase
 
 ### Task 4 — Interactive Learning Session (`/topics/[topicId]/learn`)
@@ -63,7 +62,6 @@ This is the core of Cognimo — an island-based interactive lesson player, not a
 - `AIBubble` — AI message card with avatar + name + streaming text (token-by-token)
 - `UserBubble` — user response card
 - `ResponseInput` — text input + Küldés button, disabled during AI stream (hidden during mini-quiz)
-- `QuestionPrompt` — (legacy, no longer used in current island flow — kept for compatibility)
 - `QuizQuestion` — MCQ card with 4 option buttons, [Ellenőrzés] button, ✅/❌ indicator + correct answer, [Következő] button (used for both teaching mini-quizzes)
 - `CompletionScreen` — "🎉 Gratulálunk!" card with stats (score, islands completed, XP earned), [🔄 Újratanulás] and [← Vissza] buttons
 - `ProgressBar` — top bar fraction indicator (e.g. "▓▓ 2/5") with island title badge
@@ -125,7 +123,7 @@ This is the core of Cognimo — an island-based interactive lesson player, not a
 
 ### Task 7 — Gemini Migration (F6) ✅
 - Replaced Groq/OpenAI SDK with `@google/generative-ai` — model `gemini-3.5-flash`
-- Hungarian prompts across all AI routes (`/api/analyze`, `/api/chat`, `/api/evaluate`, `/api/plan`, `/api/quiz/generate`)
+- Hungarian prompts across all AI routes (`/api/analyze`, `/api/chat`, `/api/evaluate`, `/api/quiz/generate`)
 - `BLOCK_ONLY_HIGH` safety settings, try/catch around `generateContent()` + `JSON.parse`
 - Fixed `completeJson` empty-contents bug + `generateContentStream` destructuring
 
@@ -134,6 +132,12 @@ This is the core of Cognimo — an island-based interactive lesson player, not a
 - `getAdminClient()` service-role helper in `lib/supabase-server.ts`
 - "Fiók törlése" button + ConfirmModal with `disabled` prop in `/settings`
 - `supabase/migrations/007_storage_cleanup.sql` — pg_net trigger for Storage cleanup on `study_materials` row deletion (DB-level fallback — the DELETE endpoint also handles inline Storage cleanup before removing the auth user)
+
+### Task 9 — Cleanup & Health (F9) ✅
+- Removed deprecated `/api/plan` route (replaced by `/api/analyze`)
+- Removed unused `LearningPlan` + `QuestionPrompt` components
+- Removed default Next.js SVG leftovers from `public/` (kept `avatars/*` + `cognimo-wordmark.svg`)
+- Fixed `lint` script (`eslint` → `eslint .`)
 
 ---
 

@@ -73,7 +73,7 @@ study-app/
 
 | Variable | Required for |
 |----------|-------------|
-| `GEMINI_API_KEY` | All AI features (island analysis, chat, quiz, evaluation, learning plan) |
+| `GEMINI_API_KEY` | All AI features (island analysis, chat, quiz, evaluation) |
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase client (public) |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase client (public) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Account deletion (`DELETE /api/account`) — get from Supabase Dashboard > Project Settings > API |
@@ -85,7 +85,7 @@ Two main exports in `lib/ai.ts`:
 - **`completeJson(messages)`** — sends messages to Gemini, returns parsed JSON. Use for structured outputs (island analysis, evaluation, quiz content). Handles system message extraction, empty-contents fallback, `responseMimeType: "application/json"`.
 - **`streamChat(messages, systemPrompt)`** — returns a `ReadableStream` for real-time token output. Use for interactive chat.
 
-API routes that need custom Gemini config (different model params, no JSON mode) instantiate `GoogleGenerativeAI` directly — see `app/api/plan/route.ts`, `app/api/quiz/generate/route.ts`.
+API routes that need custom Gemini config (different model params, no JSON mode) instantiate `GoogleGenerativeAI` directly — see `app/api/quiz/generate/route.ts`.
 
 Error handling: wrap `generateContent()` and `JSON.parse` in try/catch. Use `catch (e)` only when `e` is referenced in the handler body, otherwise use `catch { }` (no parameter).
 
@@ -296,7 +296,6 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 | `/api/materials/[id]`         | ✅     | DELETE material + storage file                                |
 | `/api/quiz/generate`          | ✅     | POST — generates MCQ quiz. Accepts `keyConcepts` + `questionCount` for scoped mini-quizzes |
 | `/api/topics`                 | ✅     | GET (list by subject) + POST (create) + PUT (edit) + DELETE   |
-| `/api/plan`                   | ❌     | Replaced by `/api/analyze` (island-based flow)                 |
 
 ## Known Issues
 
@@ -305,7 +304,6 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 - No error boundaries — API failures show raw errors or silent fails
 - No loading skeletons — spinner-only loading states
 - No mobile responsiveness audit done yet
-- `/api/plan` is deprecated (replaced by `/api/analyze`) but still exists — should be removed in next cleanup
 - Account deletion requires `SUPABASE_SERVICE_ROLE_KEY` in `.env.local` — missing key returns 500
 - `supabase/migrations/007_storage_cleanup.sql` requires `pg_net` extension enabled in Supabase project (not available on free plan's Database Webhook)
 
@@ -326,6 +324,7 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 13. Island-based restructuring — replaced rigid 7-step template with dynamic island analysis (`/api/analyze`). Each island = interactive teaching (scenario/socratic/conversational) → Inverted Teacher probe → 6-question mini-quiz on key_concepts. `useSessionPhaseManager` now accepts dynamic islandTitles array. After each island's mini-quiz, checkpoint saved + user returns to roadmap. `/api/quiz/generate` supports scoped generation (`keyConcepts`, `questionCount`). `ProgressRoadmap` shows island titles below circles. Removed global quiz step from session structure.
 14. **F6 — Gemini migration:** replaced Groq/OpenAI with `@google/generative-ai`, model `gemini-3.5-flash`, Hungarian prompts across all AI routes, `BLOCK_ONLY_HIGH` safety settings, try/catch around `generateContent()` + `JSON.parse`, fixed `completeJson` empty-contents bug, `generateContentStream` fix for `{ stream }` syntax
 15. **F7 — Account deletion:** `DELETE /api/account` endpoint (deletes Storage files → `auth.users`), `getAdminClient()` service-role helper in `lib/supabase-server.ts`, "Fiók törlése" button + ConfirmModal with `disabled` prop in `/settings`, `supabase/migrations/007_storage_cleanup.sql` (pg_net trigger for Storage cleanup on `study_materials` row deletion)
+16. **F9 — Cleanup & health:** removed deprecated `/api/plan` route + unused `LearningPlan` / `QuestionPrompt` components, removed default Next.js SVG leftovers from `public/`, fixed `lint` script (`eslint` → `eslint .`)
 
 ## Getting Started
 
