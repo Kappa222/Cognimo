@@ -36,6 +36,8 @@ export default function MaterialsPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [deleteMatId, setDeleteMatId] = useState<string | null>(null);
   const [justAdded, setJustAdded] = useState(false);
+  const [uploadWarning, setUploadWarning] = useState(false);
+  const [formError, setFormError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
   const loadData = useCallback(async () => {
@@ -91,7 +93,14 @@ export default function MaterialsPage() {
     setTitle("");
     setContent("");
     setLoading(false);
-    if (res.ok) setJustAdded(true);
+    setUploadWarning(false);
+    if (res.ok) {
+      setFormError("");
+      setJustAdded(true);
+    } else {
+      const body = await res.json().catch(() => null) as { error?: string } | null;
+      setFormError(body?.error ?? "Nem sikerült menteni a tananyagot.");
+    }
     await loadData();
   };
 
@@ -113,7 +122,16 @@ export default function MaterialsPage() {
     setFile(null);
     if (fileRef.current) fileRef.current.value = "";
     setLoading(false);
-    if (res.ok) setJustAdded(true);
+    if (res.ok) {
+      const body = await res.json().catch(() => null) as { warning?: string } | null;
+      setFormError("");
+      setUploadWarning(body?.warning === "SHORT_EXTRACTION");
+      setJustAdded(true);
+    } else {
+      const body = await res.json().catch(() => null) as { error?: string } | null;
+      setFormError(body?.error ?? "Nem sikerült feltölteni a PDF-et.");
+      setUploadWarning(false);
+    }
     await loadData();
   };
 
@@ -198,6 +216,18 @@ export default function MaterialsPage() {
           PDF
         </button>
       </div>
+
+      {formError && (
+        <div className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-600 dark:border-red-800 dark:bg-red-950/30 dark:text-red-400">
+          {formError}
+        </div>
+      )}
+
+      {uploadWarning && (
+        <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+          ⚠️ A PDF szövege nem vagy alig kinyerhető (pl. szkennelt dokumentum). Lumi nem fogja tudni használni a tanuláshoz — érdemes szövegként bemásolni a tartalmat.
+        </div>
+      )}
 
       {tab === "text" ? (
         <form
@@ -295,7 +325,14 @@ export default function MaterialsPage() {
                         {material.file_type === "pdf" ? "📄" : "📝"}
                       </span>
                       <div>
-                        <h3 className="font-medium">{material.title}</h3>
+                        <h3 className="font-medium">
+                          {material.title}{" "}
+                          {(!material.content || material.content.trim().length < 500) && (
+                            <span className="ml-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
+                              ⚠️ Nem olvasható
+                            </span>
+                          )}
+                        </h3>
                         <p className="text-xs text-zinc-400">
                           {material.file_type === "pdf" ? "PDF" : "Szöveg"} ·{" "}
                           {formatDate(material.created_at)}
