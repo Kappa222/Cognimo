@@ -26,6 +26,7 @@
 - Create `/topics/[topicId]/materials` page
 - Create `/api/materials` endpoint (CRUD)
 - PDF upload to Supabase storage + text paste input (max 25 MB / 300 pages, Hungarian errors)
+- Storage keys are UUID-only (raw filenames caused "Invalid key" rejections); defensive key parsing on delete
 - Extraction warning badge when PDF text is unreadable (e.g. scanned documents)
 - List materials per topic with delete option
 - Storage cleanup when material deleted

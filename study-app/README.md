@@ -331,6 +331,7 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 18. **F11 — Upload hardening:** PDF validation (25 MB / 300 pages, Hungarian errors), chunk writes on upload, `SHORT_EXTRACTION` warning banner + persistent "Nem olvasható" badge on materials page
 19. **F12 — Two-stage analysis:** large corpora summarized per batch then islands built from summaries, deterministic island→chunk mapping (`chunk_indices` on `Island`, stored in session `plan`); small corpora unchanged single-pass
 20. **F13 — Scoped injection:** `chat` / `evaluate` / `quiz/generate` load only the island's chunks (keyword + capped full-text fallback); learn page sends `islandTitle` with chat calls
+21. **F14 — Storage key fix:** UUID-only storage keys (raw client filenames with spaces/accents caused Supabase "Invalid key" rejections); defensive key parsing on delete; storage/DB errors mapped to Hungarian messages
 
 ## Getting Started
 

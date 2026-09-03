@@ -52,14 +52,18 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "A PDF túl nagy (maximum 25 MB)" }, { status: 413 });
     }
 
-    const filePath = `${user.id}/${topicId}/${crypto.randomUUID()}-${file.name}`;
+    // Storage keys must be URL-safe: never embed the raw client filename
+    // (spaces, accents, and other special chars make Supabase reject the key
+    // with "Invalid key"). The display name lives in the DB `title` column.
+    const filePath = `${user.id}/${topicId}/${crypto.randomUUID()}.pdf`;
 
     const { error: uploadError } = await supabase.storage
       .from("materials")
-      .upload(filePath, file, { contentType: file.type });
+      .upload(filePath, file, { contentType: "application/pdf" });
 
     if (uploadError) {
-      return NextResponse.json({ error: uploadError.message }, { status: 500 });
+      console.error("Storage upload failed:", uploadError);
+      return NextResponse.json({ error: "Nem sikerült feltölteni a PDF-et. Próbáld újra!" }, { status: 500 });
     }
 
     const { data: urlData } = supabase.storage
@@ -99,7 +103,8 @@ export async function POST(req: Request) {
 
     if (error) {
       await supabase.storage.from("materials").remove([filePath]);
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("Material insert failed:", error);
+      return NextResponse.json({ error: "Nem sikerült menteni a tananyagot. Próbáld újra!" }, { status: 500 });
     }
 
     // Chunk the extracted text for per-island retrieval. Chunking is pure

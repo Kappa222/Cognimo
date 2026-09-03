@@ -19,14 +19,29 @@ export async function DELETE(
     .single();
 
   if (fetchError) {
-    return NextResponse.json({ error: fetchError.message }, { status: 500 });
+    console.error("Material fetch failed:", fetchError);
+    return NextResponse.json({ error: "Nem sikerült betölteni a tananyagot." }, { status: 500 });
   }
 
   if (material?.file_url) {
-    const urlObj = new URL(material.file_url);
-    const filePath = urlObj.pathname.split("/materials/")[1];
-    if (filePath) {
-      await supabase.storage.from("materials").remove([filePath]);
+    // Derive the storage key defensively: old rows may contain raw spaces,
+    // accents, or percent-encoded segments in the filename part.
+    try {
+      const urlObj = new URL(material.file_url);
+      const marker = "/materials/";
+      const rawPath = urlObj.pathname.split(marker)[1];
+      if (rawPath) {
+        let filePath = rawPath;
+        try {
+          filePath = decodeURIComponent(rawPath);
+        } catch {
+          // Keep the raw path if it is not valid percent-encoding.
+        }
+        const { error: removeError } = await supabase.storage.from("materials").remove([filePath]);
+        if (removeError) console.error("Storage remove failed:", removeError);
+      }
+    } catch (err) {
+      console.error("Storage cleanup skipped (unparseable file_url):", err);
     }
   }
 
@@ -36,6 +51,9 @@ export async function DELETE(
     .eq("id", id)
     .eq("user_id", user.id);
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    console.error("Material delete failed:", error);
+    return NextResponse.json({ error: "Nem sikerült törölni a tananyagot." }, { status: 500 });
+  }
   return NextResponse.json({ success: true });
 }
