@@ -124,7 +124,7 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 | Subjects list | `/subjects` | Centered full-viewport layout, floating decors, back link, 3 subject cards with color-coded gradient headers (violet/blue/green) + hover-revealed "Témák megnyitása →" link |
 | Subject detail | `/subjects/[id]` | Back link, subject name heading, topic list with CRUD (create inline form, inline edit, delete via ConfirmModal), empty state dashed card, loading spinner + error + retry states |
 | Topic detail | `/topics/[topicId]` | Back link, breadcrumb, topic name heading, ProgressRoadmap (when materials exist), tab bar (Tanulj / Kvíz / Statisztika), materials list with emoji icons, "Indíts tanulást" CTA, Kvíz tab placeholder ("Hamarosan elérhető..."), Statisztika tab with 3 stat cards |
-| Study materials | `/topics/[topicId]/materials` | Back link, tab bar (Szöveg / PDF), text form (title + textarea), PDF form (title + file input), success banner after upload, material list with expandable text viewer + delete via ConfirmModal, empty state dashed card |
+| Study materials | `/topics/[topicId]/materials` | Back link, tab bar (Szöveg / PDF), text form (title + textarea), PDF multi-upload queue (drag-drop + multi-select up to 10, auto-title from filename editable inline, per-file pending/uploading/done/error states, aggregate K/N bar, retry per file, success summary), material list with expandable text viewer + delete via ConfirmModal, empty state dashed card |
 | Settings | `/settings` | Back link, profile card with username input, avatar card with 2-avatar grid, save button with "Elmentve!" confirmation, logout button with ConfirmModal (danger variant), "Fiók törlése" danger section with ConfirmModal (disabled state during deletion) |
 
 ### ✅ Reusable Components
@@ -332,6 +332,7 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 19. **F12 — Two-stage analysis:** large corpora summarized per batch then islands built from summaries, deterministic island→chunk mapping (`chunk_indices` on `Island`, stored in session `plan`); small corpora unchanged single-pass
 20. **F13 — Scoped injection:** `chat` / `evaluate` / `quiz/generate` load only the island's chunks (keyword + capped full-text fallback); learn page sends `islandTitle` with chat calls
 21. **F14 — Storage key fix:** UUID-only storage keys (raw client filenames with spaces/accents caused Supabase "Invalid key" rejections); defensive key parsing on delete; storage/DB errors mapped to Hungarian messages
+22. **F15 — Multi-PDF upload queue:** PDF tab accepts multiple files (drag-drop + multi-select, max 10 per run, sequential `POST /api/materials`); auto-title from filename (editable inline, 80-char cap, `Névtelen PDF` fallback); client pre-validation (PDF-only, 25 MB, Hungarian errors); per-file pending/uploading/done/error states with indeterminate progress + aggregate K/N bar; per-file retry; success summary (`N sikeres, M sikertelen`); `SHORT_EXTRACTION` warning kept per file and globally; server route unchanged
 
 ## Getting Started
 
