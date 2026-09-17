@@ -66,14 +66,16 @@ export function useSessionPhaseManager(
   }, [phaseName, stepIndex, islandTitles]);
 
   const start = useCallback(() => {
-    if (structure.length === 0) return;
+    // Empty islands would build a lone [complete] step and flash the
+    // completion screen with a stuck thinking indicator.
+    if (islandTitles.length === 0 || structure.length === 0) return;
     setStepIndex(0);
     setSubPhase("ai-responding");
-  }, [structure.length]);
+  }, [structure.length, islandTitles.length]);
 
   const resumeFrom = useCallback((checkpoint: number) => {
-    if (structure.length === 0) return;
-    const idx = Math.min(checkpoint, maxIndex);
+    if (islandTitles.length === 0 || structure.length === 0) return;
+    const idx = Math.min(Math.max(0, Math.floor(checkpoint)), maxIndex);
     const step = structure[idx];
     setStepIndex(idx);
     if (step?.phase === "complete") {
@@ -81,7 +83,7 @@ export function useSessionPhaseManager(
     } else {
       setSubPhase("ai-responding");
     }
-  }, [structure, maxIndex]);
+  }, [structure, maxIndex, islandTitles.length]);
 
   const goToNextStep = useCallback(() => {
     if (structure.length === 0) return;

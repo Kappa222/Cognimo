@@ -48,7 +48,6 @@ export default function LearnPage() {
   const storedMessagesRef = useRef(storedMessages);
   const hasUserRespondedRef = useRef(false);
   const streamFailCountRef = useRef(0);
-  const prevPhaseRef = useRef("");
   const contentEndRef = useRef<HTMLDivElement>(null);
   const autoStartRef = useRef(false);
   const assessQuestionRef = useRef("");
@@ -160,13 +159,13 @@ export default function LearnPage() {
   const saveCheckpoint = useCallback(async (
     checkpoint: number,
     status?: string,
-    extra?: { island_step?: string; assess_state?: unknown },
+    extra?: { island_step?: string | null; assess_state?: unknown },
   ) => {
     if (!session) return;
     const body: Record<string, unknown> = { current_checkpoint: checkpoint };
     if (status) body.status = status;
-    if (extra?.island_step) body.island_step = extra.island_step;
-    if (extra?.assess_state) body.assess_state = extra.assess_state;
+    if (extra && "island_step" in extra) body.island_step = extra.island_step;
+    if (extra && "assess_state" in extra) body.assess_state = extra.assess_state;
     const res = await fetch(`/api/sessions/${session.id}/checkpoint`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -194,10 +193,29 @@ export default function LearnPage() {
   const proceedToNextIsland = useCallback(async () => {
     const nextCheckpoint = phase.currentCheckpoint + 1;
     if (nextCheckpoint >= islands.length) {
-      await saveCheckpoint(islands.length);
+      // Final island: single PUT marks completion, then show completion screen.
+      await saveCheckpoint(islands.length, "completed", {
+        island_step: "teach",
+        assess_state: null,
+      });
       phase.goToNextStep();
     } else {
-      await saveCheckpoint(nextCheckpoint);
+      // Save progress + clear stale assess state BEFORE leaving Learn,
+      // so a reload on the roadmap never restores the old island's state.
+      await saveCheckpoint(nextCheckpoint, undefined, {
+        island_step: "teach",
+        assess_state: null,
+      });
+      // Clear local assess state so a back-navigation can't reuse it.
+      assessQuestionRef.current = "";
+      evaluateResultRef.current = null;
+      forceFarewellRef.current = false;
+      hasUserRespondedRef.current = false;
+      setAssessRound(0);
+      setProvenConcepts([]);
+      setWeakConcepts([]);
+      setRemediationCount(0);
+      setIslandStep("teach");
       router.push(`/topics/${topicId}`);
     }
   }, [phase, islands.length, saveCheckpoint, router, topicId]);
@@ -236,12 +254,24 @@ export default function LearnPage() {
         fullText += chunk;
         setStreamingText(fullText);
       }
+      // Flush any trailing multi-byte character.
+      fullText += decoder.decode();
 
-      if (fullText) {
+      if (fullText.trim()) {
         await saveMessage("assistant", fullText);
+        // New successful response breaks the consecutive-failure chain.
+        streamFailCountRef.current = 0;
         setStoredMessages((prev) => [...prev, { role: "assistant", content: fullText, id: "", session_id: session!.id, created_at: new Date().toISOString() }]);
         setDisplayMessages((prev) => [...prev, { role: "ai", text: fullText }]);
         setStreamingText("");
+
+        // Farewell was just streamed — now advance. Checked first because
+        // islandStep is still assess/remediation while farewelling.
+        if (forceFarewellRef.current) {
+          forceFarewellRef.current = false;
+          await proceedToNextIsland();
+          return;
+        }
 
         const stepPhase = phase.currentStep?.phase;
 
@@ -250,6 +280,7 @@ export default function LearnPage() {
           const currentIsland = islands[phase.stepIndex];
           const firstFocus = currentIsland?.key_concepts[0] ?? "";
           assessQuestionRef.current = firstFocus;
+          hasUserRespondedRef.current = false;
           setAssessRound(1);
           setIslandStep("assess");
           phase.setSubPhase("waiting-response");
@@ -260,8 +291,8 @@ export default function LearnPage() {
 
           if (result && result.next_focus === null) {
             // All concepts proven → success gate
-            saveAssessState();
-            proceedToNextIsland();
+            await saveAssessState();
+            await proceedToNextIsland();
           } else if (result && assessRound >= MAX_ASSESS_ROUNDS) {
             // Max rounds reached → check gate
             const currentIsland = islands[phase.stepIndex];
@@ -270,36 +301,36 @@ export default function LearnPage() {
             ) ?? false;
 
             if (allProven) {
-              saveAssessState();
-              proceedToNextIsland();
+              await saveAssessState();
+              await proceedToNextIsland();
             } else if (remediationCount < MAX_REMEDIATION && islandStep === "assess") {
               // Enter remediation
               const newCount = remediationCount + 1;
               setRemediationCount(newCount);
               setIslandStep("remediation");
               setAssessRound(1);
-              saveAssessState();
+              hasUserRespondedRef.current = false;
+              await saveAssessState();
               // Trigger remediation micro-lesson immediately
               setTimeout(() => phase.setSubPhase("ai-responding"), 100);
             } else {
               // Force proceed — send farewell first
               forceFarewellRef.current = true;
-              saveAssessState();
+              hasUserRespondedRef.current = false;
+              await saveAssessState();
               setTimeout(() => phase.setSubPhase("ai-responding"), 100);
             }
           } else if (result && result.next_focus) {
-            // Ask next question
+            // Ask next question — clear follow-up flag so the next AI turn
+            // asks (not reacts).
             assessQuestionRef.current = result.next_focus;
             setAssessRound((r) => r + 1);
-            saveAssessState();
+            hasUserRespondedRef.current = false;
+            await saveAssessState();
             setTimeout(() => phase.setSubPhase("ai-responding"), 100);
           } else {
             phase.setSubPhase("waiting-response");
           }
-        } else if (forceFarewellRef.current) {
-          // Farewell message was just sent — now proceed
-          forceFarewellRef.current = false;
-          proceedToNextIsland();
         } else if (stepPhase === "complete") {
           // No-op, completion screen handles it
         } else {
@@ -334,7 +365,7 @@ export default function LearnPage() {
     } finally {
       setIsStreaming(false);
     }
-  }, [session, phase, saveMessage, islandStep]);
+  }, [session, phase, saveMessage, saveAssessState, proceedToNextIsland, islandStep, islands, assessRound, provenConcepts, remediationCount]);
 
   const triggerAIResponse = useCallback(async () => {
     const currentMessages = storedMessagesRef.current;
@@ -375,7 +406,7 @@ export default function LearnPage() {
           content: `A felhasználó ezt a témát szeretné megtanulni: "${topic?.name ?? "ismeretlen téma"}". Kezdd el a tanulást a tananyag és a fázis-instrukció alapján, magyarul.`,
         }];
     await streamAIResponse(apiMessages, instruction, currentIsland?.title);
-  }, [streamAIResponse, topic, phase, islands, islandStep]);
+  }, [streamAIResponse, topic, phase, islands, islandStep, assessRound, provenConcepts]);
 
   useEffect(() => {
     if (phase.subPhase !== "ai-responding") return;
@@ -393,36 +424,26 @@ export default function LearnPage() {
     }
   }, [islands, phase.subPhase, phase]);
 
-  // Assess phase: reset state when entering a new island
-  useEffect(() => {
-    if (islandStep === "teach") {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setAssessRound(0);
-      setProvenConcepts([]);
-      setWeakConcepts([]);
-    }
-  }, [phase.stepIndex, islandStep]);
+  // Assess state is reset explicitly in proceedToNextIsland,
+  // generateIslandsAndStart and handleRestart — no blanket effect here,
+  // so resuming a saved assess/remediation is never wiped.
 
-  // Save checkpoint after each island completes
+  // Completion is saved once by proceedToNextIsland (single PUT with
+  // status completed). This effect is a safety net for sessions that
+  // reach complete without it (e.g. legacy flows).
+  const completionSavedRef = useRef(false);
   useEffect(() => {
-    if (phase.isStarted && !phase.isComplete && phase.currentCheckpoint > 0) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      saveCheckpoint(phase.currentCheckpoint);
+    if (phase.isComplete && session && !completionSavedRef.current) {
+      completionSavedRef.current = true;
+      saveCheckpoint(phase.currentCheckpoint, "completed", {
+        island_step: "teach",
+        assess_state: null,
+      });
     }
-  }, [phase.currentCheckpoint, phase.isStarted, phase.isComplete, saveCheckpoint]);
-
-  // Mark session as completed when reaching the end
-  useEffect(() => {
-    if (phase.isComplete && session) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      saveCheckpoint(phase.currentCheckpoint, "completed");
+    if (!phase.isComplete) {
+      completionSavedRef.current = false;
     }
   }, [phase.isComplete, phase.currentCheckpoint, session, saveCheckpoint]);
-
-  // Track phase for cleanup
-  useEffect(() => {
-    prevPhaseRef.current = phase.currentStep?.phase ?? "";
-  }, [phase.currentStep?.phase]);
 
   const generateIslandsAndStart = async () => {
     if (!topic || !subjectId || !topicId) return;
@@ -454,6 +475,16 @@ export default function LearnPage() {
       setStoredMessages([]);
       setDisplayMessages([]);
       setIslandStep("teach");
+      setAssessRound(0);
+      setProvenConcepts([]);
+      setWeakConcepts([]);
+      setRemediationCount(0);
+      assessQuestionRef.current = "";
+      evaluateResultRef.current = null;
+      forceFarewellRef.current = false;
+      hasUserRespondedRef.current = false;
+      streamFailCountRef.current = 0;
+      setSaveError("");
 
       setIslands(islandsData);
       autoStartRef.current = true;
@@ -469,7 +500,8 @@ export default function LearnPage() {
     if (isGeneratingIslands) return;
 
     if (session && session.status === "in_progress" && session.current_checkpoint > 0) {
-      setIslandStep("teach");
+      // Resume: keep the restored islandStep (teach/assess/remediation from
+      // initPage) — never force back to teach.
       phase.resumeFrom(session.current_checkpoint);
     } else if (session && session.status === "in_progress") {
       setIslandStep("teach");
@@ -480,7 +512,7 @@ export default function LearnPage() {
   };
 
   const handleAssessResponse = async (answer: string) => {
-    if (!session) return;
+    if (!session || isEvaluating) return;
     setIsEvaluating(true);
     try {
       const currentIsland = islands[phase.stepIndex];
@@ -512,11 +544,25 @@ export default function LearnPage() {
 
       const result: EvaluateResult = await res.json();
 
+      if (!Array.isArray(result.verdicts)) {
+        console.error("Evaluate error: malformed verdicts", result);
+        setError("Értékelési hiba. Próbáld újra!");
+        setIsEvaluating(false);
+        return;
+      }
+
       const newProven = new Set(provenConcepts);
       const newWeak = new Set(weakConcepts);
       for (const v of result.verdicts) {
-        if (v.verdict === "correct") newProven.add(v.concept);
-        else if (v.verdict === "wrong" || v.verdict === "partial") newWeak.add(v.concept);
+        const concept = v.concept?.trim();
+        if (!concept) continue;
+        if (v.verdict === "correct") {
+          newProven.add(concept);
+          newWeak.delete(concept);
+        } else if (v.verdict === "wrong" || v.verdict === "partial") {
+          newWeak.add(concept);
+          newProven.delete(concept);
+        }
       }
       setProvenConcepts(Array.from(newProven));
       setWeakConcepts(Array.from(newWeak));
@@ -533,10 +579,14 @@ export default function LearnPage() {
   };
 
   const handleUserResponse = async (text: string) => {
+    if (!session || isEvaluating || isStreaming) return;
+    const trimmed = text.trim();
+    if (!trimmed) return;
     streamFailCountRef.current = 0;
-    setDisplayMessages((prev) => [...prev, { role: "user", text }]);
-    await saveMessage("user", text);
-    setStoredMessages((prev) => [...prev, { role: "user", content: text, id: "", session_id: session!.id, created_at: new Date().toISOString() }]);
+    setDisplayMessages((prev) => [...prev, { role: "user", text: trimmed }]);
+    const sessionId = session.id;
+    await saveMessage("user", trimmed);
+    setStoredMessages((prev) => [...prev, { role: "user", content: trimmed, id: "", session_id: sessionId, created_at: new Date().toISOString() }]);
 
     if (islandStep === "assess" || islandStep === "remediation") {
       await handleAssessResponse(text);
@@ -546,26 +596,59 @@ export default function LearnPage() {
     }
   };
 
-  const handleRestart = () => {
+  const handleRestart = async () => {
+    // Stop any in-flight AI stream so it can't write into the fresh state.
+    abortRef.current?.abort();
+    // Abandon the DB session so the next visit never resumes stale progress.
+    if (session) {
+      try {
+        await fetch(`/api/sessions/${session.id}/checkpoint`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ current_checkpoint: 0, status: "abandoned" }),
+        });
+      } catch (err) {
+        console.error("Failed to abandon session:", err);
+      }
+    }
     phase.reset();
     setSession(null);
     setDisplayMessages([]);
     setStoredMessages([]);
+    setStreamingText("");
+    setIsStreaming(false);
+    setIsEvaluating(false);
+    setSaveError("");
     setIslands([]);
     setIslandStep("teach");
+    setAssessRound(0);
+    setProvenConcepts([]);
+    setWeakConcepts([]);
+    setRemediationCount(0);
+    assessQuestionRef.current = "";
+    evaluateResultRef.current = null;
+    forceFarewellRef.current = false;
+    hasUserRespondedRef.current = false;
+    streamFailCountRef.current = 0;
+    autoStartRef.current = false;
   };
 
   const handleBack = async () => {
     if (session && phase.isStarted && !phase.isComplete) {
       const confirmed = window.confirm("Biztosan kilépsz a tanulásból? Az előrehaladásod elmentjük.");
       if (!confirmed) return;
-      if (islandStep === "assess" || islandStep === "remediation") {
-        await saveAssessState();
-      } else {
-        await saveCheckpoint(phase.currentCheckpoint);
+      // Stop the stream first so it can't save after navigation.
+      abortRef.current?.abort();
+      try {
+        if (islandStep === "assess" || islandStep === "remediation") {
+          await saveAssessState();
+        } else {
+          await saveCheckpoint(phase.currentCheckpoint);
+        }
+      } catch (err) {
+        console.error("Failed to save on exit:", err);
       }
-    }
-    if (isGeneratingIslands) {
+    } else {
       abortRef.current?.abort();
     }
     router.push(`/topics/${topicId}`);
