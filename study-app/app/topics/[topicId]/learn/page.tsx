@@ -535,6 +535,12 @@ export default function LearnPage() {
       });
 
       if (!res.ok) {
+        // 409 = this round was already recorded (double-submit that slipped
+        // through). The first request already advanced the flow — stay quiet.
+        if (res.status === 409) {
+          setIsEvaluating(false);
+          return;
+        }
         const errText = await res.text();
         console.error("Evaluate error:", res.status, errText);
         setError("Értékelési hiba. Próbáld újra!");

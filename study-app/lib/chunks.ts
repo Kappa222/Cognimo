@@ -13,10 +13,19 @@ export const MIN_READABLE_CHARS = 500;
 export const MAX_PDF_BYTES = 25 * 1024 * 1024;
 export const MAX_PDF_PAGES = 300;
 
+export interface ChunkRef {
+  material_id: string;
+  idx: number;
+}
+
 export interface IslandLike {
   title: string;
   chunk_indices?: number[];
+  chunk_refs?: ChunkRef[];
 }
+
+// Upper bound for chunk rows pulled per request (then capped to prompt size).
+const MAX_CHUNK_FETCH = 500;
 
 /**
  * Split text into overlapping chunks at paragraph boundaries.
@@ -97,8 +106,8 @@ interface MaterialRow {
 /**
  * Load the material context relevant to one island.
  *
- * 1. If the session plan maps the island title to chunk indices, load only
- *    those chunks (fast path for large documents).
+ * 1. If the session plan maps the island title to chunk refs, load only
+ *    those chunks (precise path; legacy bare indices as fallback).
  * 2. Else if key concepts are given, return chunks mentioning them (capped).
  * 3. Else fall back to the legacy full-text join (capped).
  *
@@ -121,9 +130,56 @@ export async function getIslandContext(
 
   const titleByMaterial = new Map(readable.map((m) => [m.id, m.title]));
 
-  // 1. Chunk-index mapping from the session plan.
+  // 1a. Precise chunk refs from the session plan: (material_id, idx) pairs.
+  // No cross-material leakage, unlike the legacy bare-idx path below.
   const plan = opts.plan;
   const wanted = opts.islandTitle ? normalizeTitle(opts.islandTitle) : "";
+  if (wanted && Array.isArray(plan)) {
+    const island = (plan as IslandLike[]).find(
+      (i) => i && typeof i.title === "string" && normalizeTitle(i.title) === wanted,
+    );
+    const refs = Array.isArray(island?.chunk_refs)
+      ? island.chunk_refs.filter(
+          (r) =>
+            r &&
+            typeof r.material_id === "string" &&
+            Number.isInteger(r.idx) &&
+            (r.idx as number) >= 0,
+        )
+      : [];
+    if (refs.length > 0) {
+      const wantedIds = [...new Set(refs.map((r) => r.material_id))];
+      const wantedIdx = [...new Set(refs.map((r) => r.idx as number))];
+      const { data: chunkRows } = await supabase
+        .from("material_chunks")
+        .select("material_id, idx, content")
+        .in("material_id", wantedIds)
+        .in("idx", wantedIdx)
+        .limit(MAX_CHUNK_FETCH);
+
+      const wantedKeys = new Set(refs.map((r) => `${r.material_id}:${r.idx}`));
+      const order = new Map(readable.map((m, i) => [m.id, i]));
+      const chunks = ((chunkRows ?? []) as ChunkRow[]).filter((c) =>
+        wantedKeys.has(`${c.material_id}:${c.idx}`),
+      );
+      chunks.sort(
+        (a, b) =>
+          (order.get(a.material_id) ?? 0) - (order.get(b.material_id) ?? 0) ||
+          a.idx - b.idx,
+      );
+      if (chunks.length > 0) {
+        return capText(
+          chunks
+            .map((c) => `--- ${titleByMaterial.get(c.material_id) ?? "Tananyag"} [részlet ${c.idx}] ---\n${c.content}`)
+            .join("\n\n"),
+          MAX_PROMPT_MATERIAL_CHARS,
+        );
+      }
+    }
+  }
+
+  // 1b. Legacy bare-idx mapping (old sessions, small corpora before refs).
+  // Kept as fallback; per-material idx values can collide across materials.
   if (wanted && Array.isArray(plan)) {
     const island = (plan as IslandLike[]).find(
       (i) => i && typeof i.title === "string" && normalizeTitle(i.title) === wanted,
@@ -138,7 +194,8 @@ export async function getIslandContext(
         .select("material_id, idx, content")
         .in("material_id", materialIds)
         .in("idx", indices as number[])
-        .order("idx", { ascending: true });
+        .order("idx", { ascending: true })
+        .limit(MAX_CHUNK_FETCH);
 
       const chunks = (chunkRows ?? []) as ChunkRow[];
       if (chunks.length > 0) {
@@ -161,7 +218,8 @@ export async function getIslandContext(
     .select("material_id, idx, content")
     .in("material_id", materialIds)
     .order("material_id", { ascending: true })
-    .order("idx", { ascending: true });
+    .order("idx", { ascending: true })
+    .limit(MAX_CHUNK_FETCH);
 
   const allChunks = (allChunkRows ?? []) as ChunkRow[];
 

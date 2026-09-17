@@ -23,12 +23,18 @@ const SUMMARY_PROMPT =
   "A végén egy Kulcsszavak sorban sorolj fel 5-10 kulcsszót vesszővel elválasztva.\n\n" +
   'Csak érvényes JSON-t adj vissza: {"summary": "...", "keywords": "..."}';
 
+interface ChunkRefShape {
+  material_id: string;
+  idx: number;
+}
+
 interface IslandShape {
   title: string;
   approach: string;
   key_concepts: string[];
   probe_questions: string[];
   chunk_indices?: number[];
+  chunk_refs?: ChunkRefShape[];
 }
 
 interface BatchInfo {
@@ -36,6 +42,13 @@ interface BatchInfo {
   summary: string;
   keywords: string;
   chunkIndices: number[];
+  chunkRefs: ChunkRefShape[];
+}
+
+interface MaterialInput {
+  id: string;
+  content: string | null;
+  title: string;
 }
 
 export async function POST(req: Request) {
@@ -43,27 +56,51 @@ export async function POST(req: Request) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return new Response("Unauthorized", { status: 401 });
 
-  const { topicId } = await req.json();
-  if (!topicId) return new Response("topicId required", { status: 400 });
+  let body: { topicId?: unknown };
+  try {
+    body = await req.json();
+  } catch {
+    return new Response("Invalid JSON", { status: 400 });
+  }
+  const { topicId } = body;
+  if (!topicId || typeof topicId !== "string") {
+    return new Response("topicId required", { status: 400 });
+  }
 
   const { data: topic } = await supabase
     .from("topics")
     .select("name")
     .eq("id", topicId)
+    .eq("user_id", user.id)
     .single();
 
-  const { data: materials } = await supabase
+  if (!topic) return new Response("Topic not found", { status: 404 });
+
+  const { data: materials, error: materialsError } = await supabase
     .from("study_materials")
-    .select("content, title")
+    .select("id, content, title")
     .eq("topic_id", topicId)
+    .eq("user_id", user.id)
     .not("content", "is", null)
     .order("created_at", { ascending: true });
+
+  if (materialsError) {
+    console.error("Analyze materials load failed:", materialsError);
+    return new Response("Failed to load materials", { status: 500 });
+  }
+
+  const readable = ((materials ?? []) as MaterialInput[]).filter(
+    (m) => m.content && m.content.trim().length > 0,
+  );
+  if (readable.length === 0) {
+    return new Response("No readable materials for this topic", { status: 400 });
+  }
 
   const topicSuffix =
     'Készíts tanulási tervet a következő témához: "' + (topic?.name ?? "ez a téma") + '".';
 
   try {
-    const islands = await buildIslands(materials ?? [], topicSuffix);
+    const islands = await buildIslands(readable, topicSuffix);
     return new Response(JSON.stringify(islands), {
       headers: { "Content-Type": "application/json" },
     });
@@ -74,16 +111,27 @@ export async function POST(req: Request) {
 }
 
 async function buildIslands(
-  materials: { content: string | null; title: string }[],
+  materials: MaterialInput[],
   topicSuffix: string,
 ): Promise<IslandShape[]> {
-  const readable = (materials ?? []).filter(
+  const readable = materials.filter(
     (m) => m.content && m.content.trim().length > 0,
-  ) as { content: string; title: string }[];
+  ) as { id: string; content: string; title: string }[];
 
   const totalChars = readable.reduce((sum, m) => sum + m.content.length, 0);
 
-  // Small corpora: current single-pass path, byte-identical behavior.
+  // Pre-chunk with the same splitter as upload time, so per-material idx
+  // values line up with the stored material_chunks rows.
+  const chunked = readable.map((m) => ({
+    id: m.id,
+    title: m.title,
+    chunks: chunkText(m.content),
+  }));
+  const flatChunks = chunked.flatMap((m) =>
+    m.chunks.map((text, idx) => ({ material_id: m.id, idx, text })),
+  );
+
+  // Small corpora: current single-pass path, byte-identical prompting.
   if (totalChars <= LARGE_CORPUS_THRESHOLD) {
     const parts: string[] = [SYSTEM_PROMPT];
     if (readable.length > 0) {
@@ -95,26 +143,45 @@ async function buildIslands(
     parts.push(topicSuffix);
     const messages = [{ role: "system" as const, content: parts.join("\n\n") }];
     const parsed = await completeJson(messages);
-    return coerceIslands(parsed);
+    const islands = coerceIslands(parsed);
+    // Map islands to precise chunk refs even on the small path, so chat
+    // and evaluate can scope to the island instead of full text.
+    mapIslandsToChunks(islands, flatChunks);
+    return islands;
   }
 
   // Large corpora: two-stage path — summarize batches, then islands from summaries.
-  // Chunks are derived with the same splitter as upload time, so per-material
-  // indices line up with the stored material_chunks rows.
-  const batches = toBatches(readable);
+  const batches = toBatches(chunked);
   const batchInfos: BatchInfo[] = [];
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i];
     const messages = [
       { role: "system" as const, content: SUMMARY_PROMPT + "\n\n" + batch.text },
     ];
-    const raw = await completeJson(messages) as { summary?: unknown; keywords?: unknown };
-    batchInfos.push({
-      label: `${i + 1}. összefoglaló (${batch.firstGlobal}–${batch.lastGlobal}. részletek)`,
-      summary: typeof raw.summary === "string" ? raw.summary : "",
-      keywords: typeof raw.keywords === "string" ? raw.keywords : "",
-      chunkIndices: batch.globalIndices,
-    });
+    try {
+      const raw = await completeJson(messages) as { summary?: unknown; keywords?: unknown };
+      batchInfos.push({
+        label: `${i + 1}. összefoglaló (${batch.firstGlobal}–${batch.lastGlobal}. részletek)`,
+        summary: typeof raw.summary === "string" ? raw.summary : "",
+        keywords: typeof raw.keywords === "string" ? raw.keywords : "",
+        chunkIndices: batch.globalIndices,
+        chunkRefs: batch.chunkRefs,
+      });
+    } catch (err) {
+      // One bad batch must not abort the whole plan; keep its refs so the
+      // island mapping can still reach those chunks via other batches.
+      console.error(`Analyze batch ${i + 1}/${batches.length} failed:`, err);
+      batchInfos.push({
+        label: `${i + 1}. összefoglaló (${batch.firstGlobal}–${batch.lastGlobal}. részletek)`,
+        summary: "",
+        keywords: "",
+        chunkIndices: batch.globalIndices,
+        chunkRefs: batch.chunkRefs,
+      });
+    }
+  }
+  if (batchInfos.every((b) => !b.summary && !b.keywords)) {
+    throw new Error("All summarization batches failed");
   }
 
   const parts: string[] = [SYSTEM_PROMPT];
@@ -132,17 +199,53 @@ async function buildIslands(
   // keyword matching on chunks would miss translations).
   for (const island of islands) {
     const concepts = island.key_concepts.map((c) => c.toLowerCase());
-    const matched = new Set<number>();
+    const matchedIdx = new Set<number>();
+    const matchedRefs = new Map<string, ChunkRefShape>();
     for (const b of batchInfos) {
       const haystack = `${b.summary}\n${b.keywords}`.toLowerCase();
       if (concepts.some((c) => c && haystack.includes(c))) {
-        for (const n of b.chunkIndices) matched.add(n);
+        for (const n of b.chunkIndices) matchedIdx.add(n);
+        for (const r of b.chunkRefs) matchedRefs.set(`${r.material_id}:${r.idx}`, r);
       }
     }
-    island.chunk_indices = Array.from(matched).sort((a, b) => a - b);
+    island.chunk_indices = Array.from(matchedIdx).sort((a, b) => a - b);
+    island.chunk_refs = Array.from(matchedRefs.values()).sort(
+      (a, b) => a.material_id.localeCompare(b.material_id) || a.idx - b.idx,
+    );
   }
 
   return islands;
+}
+
+/** Match island key concepts directly against chunk texts (small corpora). */
+function mapIslandsToChunks(
+  islands: IslandShape[],
+  flatChunks: { material_id: string; idx: number; text: string }[],
+): void {
+  for (const island of islands) {
+    const concepts = island.key_concepts
+      .map((c) => c.toLowerCase())
+      .filter((c) => c.length >= 3);
+    if (concepts.length === 0 || flatChunks.length === 0) continue;
+    const matchedIdx = new Set<number>();
+    const matchedRefs = new Map<string, ChunkRefShape>();
+    for (const c of flatChunks) {
+      const body = c.text.toLowerCase();
+      if (concepts.some((k) => body.includes(k))) {
+        matchedIdx.add(c.idx);
+        matchedRefs.set(`${c.material_id}:${c.idx}`, {
+          material_id: c.material_id,
+          idx: c.idx,
+        });
+      }
+    }
+    if (matchedRefs.size > 0) {
+      island.chunk_indices = Array.from(matchedIdx).sort((a, b) => a - b);
+      island.chunk_refs = Array.from(matchedRefs.values()).sort(
+        (a, b) => a.material_id.localeCompare(b.material_id) || a.idx - b.idx,
+      );
+    }
+  }
 }
 
 function coerceIslands(parsed: unknown): IslandShape[] {
@@ -163,20 +266,25 @@ function coerceIslands(parsed: unknown): IslandShape[] {
 }
 
 function toBatches(
-  readable: { content: string; title: string }[],
-): { text: string; globalIndices: number[]; firstGlobal: number; lastGlobal: number }[] {
+  chunked: { id: string; title: string; chunks: string[] }[],
+): {
+  text: string;
+  globalIndices: number[];
+  chunkRefs: ChunkRefShape[];
+  firstGlobal: number;
+  lastGlobal: number;
+}[] {
   // Global chunk numbering across materials (1-based for prompt readability).
-  const numbered: { materialTitle: string; idx: number; global: number; text: string }[] = [];
+  const numbered: { materialId: string; materialTitle: string; idx: number; global: number; text: string }[] = [];
   let global = 0;
-  for (const m of readable) {
-    const chunks = chunkText(m.content);
-    chunks.forEach((text, idx) => {
+  for (const m of chunked) {
+    m.chunks.forEach((text, idx) => {
       global += 1;
-      numbered.push({ materialTitle: m.title, idx, global, text });
+      numbered.push({ materialId: m.id, materialTitle: m.title, idx, global, text });
     });
   }
 
-  const batches: { text: string; globalIndices: number[]; firstGlobal: number; lastGlobal: number }[] = [];
+  const batches: { text: string; globalIndices: number[]; chunkRefs: ChunkRefShape[]; firstGlobal: number; lastGlobal: number }[] = [];
   let current: typeof numbered = [];
   let currentChars = 0;
   const flush = () => {
@@ -184,6 +292,7 @@ function toBatches(
     batches.push({
       text: current.map((c) => `[${c.global}. részlet — ${c.materialTitle}]\n${c.text}`).join("\n\n"),
       globalIndices: current.map((c) => c.idx),
+      chunkRefs: current.map((c) => ({ material_id: c.materialId, idx: c.idx })),
       firstGlobal: current[0].global,
       lastGlobal: current[current.length - 1].global,
     });

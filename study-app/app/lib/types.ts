@@ -81,6 +81,7 @@ export interface Island {
   key_concepts: string[];
   probe_questions: string[];
   chunk_indices?: number[];
+  chunk_refs?: { material_id: string; idx: number }[];
 }
 
 export interface CompletionStats {

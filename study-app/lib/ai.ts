@@ -39,8 +39,11 @@ export async function completeJson(
   }
 
   if (geminiMessages.length === 0) {
-    geminiMessages = [{ role: "user", parts: [{ text: systemMessage! }] }];
-    systemMessage = undefined;
+    // Gemini needs at least one content message; keep the system instruction
+    // (dropping it weakens JSON adherence) and send a minimal trigger.
+    geminiMessages = [
+      { role: "user", parts: [{ text: "Kövesd a rendszerutasítást, és csak érvényes JSON-nal válaszolj." }] },
+    ];
   }
 
   const model = genAI.getGenerativeModel({
@@ -97,11 +100,17 @@ export async function streamChat(
 
   return new ReadableStream({
     async start(controller) {
-      for await (const chunk of streamResult.stream) {
-        const text = chunk.text();
-        if (text) controller.enqueue(text);
+      try {
+        for await (const chunk of streamResult.stream) {
+          const text = chunk.text();
+          if (text) controller.enqueue(text);
+        }
+        controller.close();
+      } catch (err) {
+        // Mid-stream block/failure: don't hang the client until timeout.
+        console.error("Gemini stream error:", err);
+        controller.error(err);
       }
-      controller.close();
     },
   });
 }
