@@ -41,18 +41,30 @@ export default function LearnPage() {
   const [weakConcepts, setWeakConcepts] = useState<string[]>([]);
   const [remediationCount, setRemediationCount] = useState(0);
   const [isEvaluating, setIsEvaluating] = useState(false);
+  // Inline (non-fatal) chat errors: transient AI/evaluate failures show a
+  // retry panel instead of hijacking the whole page like `error` does.
+  const [chatError, setChatError] = useState<{
+    message: string;
+    retry: "ai" | "evaluate";
+  } | null>(null);
 
   const islandTitles = islands.map((i) => i.title);
   const phase = useSessionPhaseManager(islandTitles);
   const abortRef = useRef<AbortController | null>(null);
   const storedMessagesRef = useRef(storedMessages);
   const hasUserRespondedRef = useRef(false);
-  const streamFailCountRef = useRef(0);
   const contentEndRef = useRef<HTMLDivElement>(null);
   const autoStartRef = useRef(false);
   const assessQuestionRef = useRef("");
   const evaluateResultRef = useRef<EvaluateResult | null>(null);
   const forceFarewellRef = useRef(false);
+  // Mutual-exclusion guard: state updates lag rapid double-Enters, so a ref
+  // (not state) is the only reliable double-submit barrier.
+  const sendingRef = useRef(false);
+  // Last assess answer for error-panel retries.
+  const lastAnswerRef = useRef("");
+  // initPage run id: stale runs after a topicId change bail out early.
+  const initRunRef = useRef(0);
 
   const MAX_ASSESS_ROUNDS = 4;
   const MAX_REMEDIATION = 2;
@@ -66,10 +78,13 @@ export default function LearnPage() {
   useEffect(() => { hasUserRespondedRef.current = false; }, [phase.stepIndex]);
 
   const initPage = useCallback(async () => {
+    const runId = ++initRunRef.current;
+    const isStale = () => runId !== initRunRef.current;
     setPageLoading(true);
     setError("");
 
     const { data: { user } } = await supabase.auth.getUser();
+    if (isStale()) return;
     if (!user) { router.push("/login"); return; }
 
     const { data: t, error: topicErr } = await supabase
@@ -77,6 +92,7 @@ export default function LearnPage() {
       .select("*")
       .eq("id", topicId)
       .single();
+    if (isStale()) return;
     if (topicErr || !t) { setError("Nem sikerült betölteni a témát."); setPageLoading(false); return; }
     setTopic(t);
     setSubjectId(t.subject_id);
@@ -85,20 +101,26 @@ export default function LearnPage() {
       .from("study_materials")
       .select("*", { count: "exact", head: true })
       .eq("topic_id", topicId);
+    if (isStale()) return;
     if (count !== null) setMaterialsCount(count);
 
     const res = await fetch(`/api/sessions?topic_id=${topicId}`);
+    if (isStale()) return;
     if (res.ok) {
       const existing: ChatSession | null = await res.json();
       if (existing && existing.status === "in_progress") {
         setSession(existing);
         const msgRes = await fetch(`/api/sessions/${existing.id}`);
+        if (isStale()) return;
         if (msgRes.ok) {
           const { session: sessionData, messages } = await msgRes.json();
+          if (isStale()) return;
           setStoredMessages(messages);
 
           // Load islands from plan column (new) or fallback to __ISLANDS__: message (old)
+          let loadedIslands: Island[] = [];
           if (sessionData?.plan && Array.isArray(sessionData.plan) && sessionData.plan.length > 0) {
+            loadedIslands = sessionData.plan;
             setIslands(sessionData.plan);
           } else {
             const islandMsg = messages.find(
@@ -107,6 +129,7 @@ export default function LearnPage() {
             if (islandMsg) {
               try {
                 const data: Island[] = JSON.parse(islandMsg.content.slice(11));
+                loadedIslands = data;
                 setIslands(data);
               } catch { /* ignore */ }
             }
@@ -122,9 +145,35 @@ export default function LearnPage() {
               setWeakConcepts(sData.assess_state.weak ?? []);
               setRemediationCount(sData.assess_state.remediationCount ?? 0);
               assessQuestionRef.current = sData.assess_state.nextFocus ?? "";
+            } else {
+              // assess_state lost (e.g. save failed) but mastery survived:
+              // rebuild proven/weak for the current island from mastery.
+              const island = loadedIslands[existing.current_checkpoint];
+              if (island) {
+                const { data: mastery } = await supabase
+                  .from("concept_mastery")
+                  .select("concept, status")
+                  .eq("topic_id", topicId);
+                if (isStale()) return;
+                const byConcept = new Map(
+                  ((mastery ?? []) as { concept: string; status: string }[]).map((m) => [m.concept, m.status]),
+                );
+                setProvenConcepts(
+                  island.key_concepts.filter((c) => {
+                    const s = byConcept.get(c);
+                    return s === "solid" || s === "seen";
+                  }),
+                );
+                setWeakConcepts(
+                  island.key_concepts.filter((c) => byConcept.get(c) === "shaky"),
+                );
+                setAssessRound(1);
+                assessQuestionRef.current = island.key_concepts[0] ?? "";
+              }
             }
           }
 
+          if (isStale()) return;
           setDisplayMessages(
             messages
               .filter((m: ChatMessage) => !m.content.startsWith("__ISLANDS__:"))
@@ -137,6 +186,7 @@ export default function LearnPage() {
       }
     }
 
+    if (isStale()) return;
     setPageLoading(false);
   }, [topicId, router]);
 
@@ -144,16 +194,26 @@ export default function LearnPage() {
   useEffect(() => { initPage(); }, [initPage]);
 
   const saveMessage = useCallback(async (role: "user" | "assistant", content: string) => {
-    if (!session) return;
-    const res = await fetch(`/api/sessions/${session.id}/messages`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ role, content }),
-    });
-    if (!res.ok) {
-      console.error("Failed to save message:", await res.text());
-      setSaveError("Nem sikerült menteni az üzenetet.");
+    if (!session) return false;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, 1000));
+      try {
+        const res = await fetch(`/api/sessions/${session.id}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role, content }),
+        });
+        if (res.ok) {
+          setSaveError("");
+          return true;
+        }
+        console.error("Failed to save message:", res.status, await res.text());
+      } catch (err) {
+        console.error("Failed to save message:", err);
+      }
     }
+    setSaveError("Nem sikerült menteni az üzenetet. Újratöltéskor elveszhet.");
+    return false;
   }, [session]);
 
   const saveCheckpoint = useCallback(async (
@@ -161,20 +221,33 @@ export default function LearnPage() {
     status?: string,
     extra?: { island_step?: string | null; assess_state?: unknown },
   ) => {
-    if (!session) return;
+    if (!session) {
+      console.warn("saveCheckpoint dropped: no session");
+      return false;
+    }
     const body: Record<string, unknown> = { current_checkpoint: checkpoint };
     if (status) body.status = status;
     if (extra && "island_step" in extra) body.island_step = extra.island_step;
     if (extra && "assess_state" in extra) body.assess_state = extra.assess_state;
-    const res = await fetch(`/api/sessions/${session.id}/checkpoint`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) {
-      console.error("Failed to save checkpoint:", await res.text());
-      setSaveError("Nem sikerült menteni az előrehaladást.");
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, 1000));
+      try {
+        const res = await fetch(`/api/sessions/${session.id}/checkpoint`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (res.ok) {
+          setSaveError("");
+          return true;
+        }
+        console.error("Failed to save checkpoint:", res.status, await res.text());
+      } catch (err) {
+        console.error("Failed to save checkpoint:", err);
+      }
     }
+    setSaveError("Nem sikerült menteni az előrehaladást. Újratöltéskor elveszhet.");
+    return false;
   }, [session]);
 
   const saveAssessState = useCallback(async () => {
@@ -228,48 +301,55 @@ export default function LearnPage() {
     if (!session) return;
     setIsStreaming(true);
     setStreamingText("");
-    abortRef.current = new AbortController();
-    // Retry count persists across calls; reset on new user action below
 
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: session.id, messages: history, phaseInstruction, islandTitle }),
-        signal: abortRef.current.signal,
-      });
-
-      if (!res.ok) { const errText = await res.text(); throw new Error(`API error: ${res.status} ${errText}`); }
-
-      const reader = res.body?.getReader();
-      if (!reader) throw new Error("No reader");
-
-      const decoder = new TextDecoder();
-      let fullText = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        fullText += chunk;
-        setStreamingText(fullText);
+    // One automatic retry with backoff; final failure becomes an inline
+    // retry panel (chatError), never a full-page error.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0) {
+        setStreamingText("");
+        await new Promise((r) => setTimeout(r, 1500));
       }
+      abortRef.current = new AbortController();
+
+      try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId: session.id, messages: history, phaseInstruction, islandTitle }),
+          signal: abortRef.current.signal,
+        });
+
+        if (!res.ok) { const errText = await res.text(); throw new Error(`API error: ${res.status} ${errText}`); }
+
+        const reader = res.body?.getReader();
+        if (!reader) throw new Error("No reader");
+
+        const decoder = new TextDecoder();
+        let fullText = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value, { stream: true });
+          fullText += chunk;
+          setStreamingText(fullText);
+        }
       // Flush any trailing multi-byte character.
       fullText += decoder.decode();
 
       if (fullText.trim()) {
         await saveMessage("assistant", fullText);
-        // New successful response breaks the consecutive-failure chain.
-        streamFailCountRef.current = 0;
-        setStoredMessages((prev) => [...prev, { role: "assistant", content: fullText, id: "", session_id: session!.id, created_at: new Date().toISOString() }]);
+        setStoredMessages((prev) => [...prev, { role: "assistant", content: fullText, id: "", session_id: session.id, created_at: new Date().toISOString() }]);
         setDisplayMessages((prev) => [...prev, { role: "ai", text: fullText }]);
         setStreamingText("");
+        setChatError(null);
 
         // Farewell was just streamed — now advance. Checked first because
         // islandStep is still assess/remediation while farewelling.
         if (forceFarewellRef.current) {
           forceFarewellRef.current = false;
           await proceedToNextIsland();
+          setIsStreaming(false);
           return;
         }
 
@@ -342,29 +422,26 @@ export default function LearnPage() {
           }
         }
       } else {
-        // Empty response — auto-retry up to 2 times, show error only after
-        streamFailCountRef.current++;
-        if (streamFailCountRef.current >= 2) {
-          setStreamingText("");
-          setError("Az AI nem tudott választ adni. Próbáld újra!");
-          streamFailCountRef.current = 0;
-          if (phase.subPhase === "ai-responding") {
-            phase.setSubPhase("waiting-response");
-          }
+        // Empty response counts as a failed attempt — throw to retry.
+        throw new Error("Empty response from AI");
+      }
+      } catch (err) {
+        if ((err as Error).name === "AbortError") {
+          setIsStreaming(false);
+          return;
+        }
+        console.error(`AI stream error (attempt ${attempt + 1}/2):`, err);
+        // Drop partial text so a phantom bubble never lingers.
+        setStreamingText("");
+        if (attempt === 1) {
+          setChatError({
+            message: "Nem sikerült kapcsolódni Lumihoz. Ellenőrizd az internetet, majd próbáld újra!",
+            retry: "ai",
+          });
         }
       }
-    } catch (err) {
-      if ((err as Error).name === "AbortError") return;
-      console.error("AI stream error:", err);
-      streamFailCountRef.current++;
-      if (streamFailCountRef.current >= 2) {
-        setError("Nem sikerült kapcsolódni a mesterséges intelligenciához. Próbáld újra!");
-        streamFailCountRef.current = 0;
-        phase.setSubPhase("waiting-response");
-      }
-    } finally {
-      setIsStreaming(false);
     }
+    setIsStreaming(false);
   }, [session, phase, saveMessage, saveAssessState, proceedToNextIsland, islandStep, islands, assessRound, provenConcepts, remediationCount]);
 
   const triggerAIResponse = useCallback(async () => {
@@ -375,6 +452,9 @@ export default function LearnPage() {
     const filteredMessages = currentMessages.filter(
       (m) => !m.content.startsWith("__ISLANDS__:"),
     );
+    // Bound token cost: the server also caps, but sending less keeps
+    // sessions fast and far from model limits.
+    const recentMessages = filteredMessages.slice(-30);
 
     let instruction: string;
     if (forceFarewellRef.current) {
@@ -396,8 +476,8 @@ export default function LearnPage() {
       );
     }
 
-    const apiMessages = filteredMessages.length > 0
-      ? filteredMessages.map((m) => ({
+    const apiMessages = recentMessages.length > 0
+      ? recentMessages.map((m) => ({
           role: m.role === "assistant" ? "assistant" : "user",
           content: m.content,
         }))
@@ -411,10 +491,18 @@ export default function LearnPage() {
   useEffect(() => {
     if (phase.subPhase !== "ai-responding") return;
     if (isStreaming) return;
+    if (chatError) return;
     if (phase.currentStep?.phase === "complete") return;
 
     triggerAIResponse();
-  }, [phase.subPhase, phase.currentStep?.phase, isStreaming, triggerAIResponse]);
+  }, [phase.subPhase, phase.currentStep?.phase, isStreaming, chatError, triggerAIResponse]);
+
+  // Abort any in-flight stream when leaving the page.
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   // Auto-start when islands are loaded
   useEffect(() => {
@@ -459,7 +547,37 @@ export default function LearnPage() {
 
       if (!res.ok) throw new Error("Island generation failed");
 
-      const islandsData: Island[] = await res.json();
+      const raw: unknown = await res.json();
+      // Validate AI output shape before it touches session state — malformed
+      // islands crash phase instructions (key_concepts.join etc.).
+      const islandsData: Island[] = (Array.isArray(raw) ? raw : [])
+        .filter(
+          (i): i is Island =>
+            !!i &&
+            typeof i === "object" &&
+            typeof (i as { title?: unknown }).title === "string" &&
+            ((i as { title: string }).title.trim().length > 0) &&
+            Array.isArray((i as { key_concepts?: unknown }).key_concepts) &&
+            ((i as { key_concepts: unknown[] }).key_concepts.length > 0) &&
+            Array.isArray((i as { probe_questions?: unknown }).probe_questions),
+        )
+        .map((i) => ({
+          title: (i as { title: string }).title,
+          approach: (["scenario", "socratic", "conversational"] as const).includes(
+            (i as { approach?: string }).approach as "scenario",
+          )
+            ? ((i as { approach: "scenario" | "socratic" | "conversational" }).approach)
+            : ("conversational" as const),
+          key_concepts: ((i as { key_concepts: unknown[] }).key_concepts as unknown[]).filter(
+            (c): c is string => typeof c === "string" && c.trim().length > 0,
+          ),
+          probe_questions: ((i as { probe_questions: unknown[] }).probe_questions as unknown[]).filter(
+            (q): q is string => typeof q === "string" && q.trim().length > 0,
+          ),
+          ...("chunk_indices" in (i as object) ? { chunk_indices: (i as Island).chunk_indices } : {}),
+          ...("chunk_refs" in (i as object) ? { chunk_refs: (i as Island).chunk_refs } : {}),
+        }))
+        .filter((i) => i.key_concepts.length > 0);
       if (islandsData.length === 0) throw new Error("No islands generated");
 
       const sessionRes = await fetch("/api/sessions", {
@@ -483,8 +601,9 @@ export default function LearnPage() {
       evaluateResultRef.current = null;
       forceFarewellRef.current = false;
       hasUserRespondedRef.current = false;
-      streamFailCountRef.current = 0;
       setSaveError("");
+      setChatError(null);
+      lastAnswerRef.current = "";
 
       setIslands(islandsData);
       autoStartRef.current = true;
@@ -543,7 +662,10 @@ export default function LearnPage() {
         }
         const errText = await res.text();
         console.error("Evaluate error:", res.status, errText);
-        setError("Értékelési hiba. Próbáld újra!");
+        setChatError({
+          message: "Az értékelés nem sikerült. Próbáld újra, vagy írj új választ!",
+          retry: "evaluate",
+        });
         setIsEvaluating(false);
         return;
       }
@@ -552,7 +674,10 @@ export default function LearnPage() {
 
       if (!Array.isArray(result.verdicts)) {
         console.error("Evaluate error: malformed verdicts", result);
-        setError("Értékelési hiba. Próbáld újra!");
+        setChatError({
+          message: "Az értékelés nem sikerült. Próbáld újra, vagy írj új választ!",
+          retry: "evaluate",
+        });
         setIsEvaluating(false);
         return;
       }
@@ -575,30 +700,54 @@ export default function LearnPage() {
 
       evaluateResultRef.current = result;
       hasUserRespondedRef.current = true;
+      setChatError(null);
       phase.setSubPhase("ai-responding");
     } catch (err) {
       console.error("Evaluate error:", err);
-      setError("Értékelési hiba. Próbáld újra!");
+      setChatError({
+        message: "Az értékelés nem sikerült. Próbáld újra, vagy írj új választ!",
+        retry: "evaluate",
+      });
     } finally {
       setIsEvaluating(false);
     }
   };
 
   const handleUserResponse = async (text: string) => {
-    if (!session || isEvaluating || isStreaming) return;
+    if (!session || isEvaluating || isStreaming || sendingRef.current) return;
+    sendingRef.current = true;
     const trimmed = text.trim();
-    if (!trimmed) return;
-    streamFailCountRef.current = 0;
+    if (!trimmed) {
+      sendingRef.current = false;
+      return;
+    }
+    setChatError(null);
     setDisplayMessages((prev) => [...prev, { role: "user", text: trimmed }]);
     const sessionId = session.id;
     await saveMessage("user", trimmed);
     setStoredMessages((prev) => [...prev, { role: "user", content: trimmed, id: "", session_id: sessionId, created_at: new Date().toISOString() }]);
 
-    if (islandStep === "assess" || islandStep === "remediation") {
-      await handleAssessResponse(text);
-    } else {
-      hasUserRespondedRef.current = true;
-      phase.setSubPhase("ai-responding");
+    try {
+      if (islandStep === "assess" || islandStep === "remediation") {
+        lastAnswerRef.current = trimmed;
+        await handleAssessResponse(trimmed);
+      } else {
+        hasUserRespondedRef.current = true;
+        phase.setSubPhase("ai-responding");
+      }
+    } finally {
+      sendingRef.current = false;
+    }
+  };
+
+  const handleChatRetry = async () => {
+    if (!chatError || isStreaming || isEvaluating || sendingRef.current) return;
+    const kind = chatError.retry;
+    setChatError(null);
+    if (kind === "ai") {
+      await triggerAIResponse();
+    } else if (lastAnswerRef.current) {
+      await handleAssessResponse(lastAnswerRef.current);
     }
   };
 
@@ -625,6 +774,8 @@ export default function LearnPage() {
     setIsStreaming(false);
     setIsEvaluating(false);
     setSaveError("");
+    setChatError(null);
+    lastAnswerRef.current = "";
     setIslands([]);
     setIslandStep("teach");
     setAssessRound(0);
@@ -635,8 +786,8 @@ export default function LearnPage() {
     evaluateResultRef.current = null;
     forceFarewellRef.current = false;
     hasUserRespondedRef.current = false;
-    streamFailCountRef.current = 0;
     autoStartRef.current = false;
+    sendingRef.current = false;
   };
 
   const handleBack = async () => {
@@ -767,6 +918,19 @@ export default function LearnPage() {
           </div>
         )}
 
+        {/* Inline chat error with retry — transient AI/evaluate failures */}
+        {chatError && !isStreaming && !isEvaluating && (
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600 dark:border-red-800 dark:bg-red-950/30 dark:text-red-400">
+            <p>{chatError.message}</p>
+            <button
+              onClick={handleChatRetry}
+              className="shrink-0 cursor-pointer rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-all hover:bg-violet-600 active:scale-[0.98]"
+            >
+              Újra
+            </button>
+          </div>
+        )}
+
         {/* Waiting for AI to start responding */}
         {phase.subPhase === "ai-responding" && isStreaming && !streamingText && phase.isStarted && (
           <div className="flex items-center gap-3 rounded-2xl border border-zinc-200/60 bg-zinc-50/50 p-4 dark:border-zinc-800/60 dark:bg-zinc-900/50">
@@ -776,7 +940,7 @@ export default function LearnPage() {
         )}
 
         {/* Thinking indicator — AI is processing before streaming starts */}
-        {phase.subPhase === "ai-responding" && !isStreaming && phase.isStarted && (
+        {phase.subPhase === "ai-responding" && !isStreaming && !chatError && phase.isStarted && (
           <div className="flex items-center gap-3 rounded-2xl border border-zinc-200/60 bg-zinc-50/50 p-4 dark:border-zinc-800/60 dark:bg-zinc-900/50">
             <div className="h-3 w-3 animate-pulse rounded-full bg-accent" />
             <p className="text-sm text-zinc-500">Lumi gondolkodik...</p>
