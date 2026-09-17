@@ -54,7 +54,9 @@ export function useSessionPhaseManager(
   const totalCheckpoints = islandTitles.length;
 
   const isStarted = subPhase !== "idle";
-  const isComplete = currentStep?.phase === "complete";
+  // With no islands the structure is a lone [complete] step — that must not
+  // read as finished, otherwise an unloadable plan shows instant completion.
+  const isComplete = islandTitles.length > 0 && currentStep?.phase === "complete";
 
   const phaseName = currentStep?.phase ?? "explain";
   const phaseBadge = useMemo(() => {

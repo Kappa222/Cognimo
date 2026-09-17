@@ -89,11 +89,17 @@ export async function POST(req: Request) {
     return new Response("Failed to load materials", { status: 500 });
   }
 
-  const readable = ((materials ?? []) as MaterialInput[]).filter(
+  const all = (materials ?? []) as MaterialInput[];
+  const readable = all.filter(
     (m) => m.content && m.content.trim().length > 0,
   );
   if (readable.length === 0) {
-    return new Response("No readable materials for this topic", { status: 400 });
+    // Distinguish "nothing uploaded" from "uploaded but unreadable" so the
+    // UI can guide (scanned PDFs need paste-as-text, not a retry).
+    if (all.length === 0) {
+      return new Response("Nincs tananyag ehhez a témához. Adj hozzá szöveget vagy PDF-et!", { status: 400 });
+    }
+    return new Response("A feltöltött tananyagok szövege nem olvasható (pl. szkennelt PDF). Másold be a tartalmat szövegként a Tananyagok oldalon!", { status: 400 });
   }
 
   const topicSuffix =

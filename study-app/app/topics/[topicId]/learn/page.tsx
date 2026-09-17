@@ -109,31 +109,48 @@ export default function LearnPage() {
     if (res.ok) {
       const existing: ChatSession | null = await res.json();
       if (existing && existing.status === "in_progress") {
-        setSession(existing);
         const msgRes = await fetch(`/api/sessions/${existing.id}`);
         if (isStale()) return;
         if (msgRes.ok) {
           const { session: sessionData, messages } = await msgRes.json();
           if (isStale()) return;
-          setStoredMessages(messages);
 
           // Load islands from plan column (new) or fallback to __ISLANDS__: message (old)
           let loadedIslands: Island[] = [];
           if (sessionData?.plan && Array.isArray(sessionData.plan) && sessionData.plan.length > 0) {
             loadedIslands = sessionData.plan;
-            setIslands(sessionData.plan);
           } else {
             const islandMsg = messages.find(
               (m: ChatMessage) => m.role === "assistant" && m.content.startsWith("__ISLANDS__:"),
             );
             if (islandMsg) {
               try {
-                const data: Island[] = JSON.parse(islandMsg.content.slice(11));
-                loadedIslands = data;
-                setIslands(data);
+                loadedIslands = JSON.parse(islandMsg.content.slice(11));
               } catch { /* ignore */ }
             }
           }
+
+          if (loadedIslands.length === 0) {
+            // Unusable leftover (e.g. created before the plan column
+            // existed): it can never start and would render as instant
+            // completion. Abandon it so a fresh plan gets generated.
+            try {
+              await fetch(`/api/sessions/${existing.id}/checkpoint`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ current_checkpoint: 0, status: "abandoned" }),
+              });
+            } catch (err) {
+              console.error("Failed to abandon plan-less session:", err);
+            }
+            if (isStale()) return;
+            setSession(null);
+            setStoredMessages([]);
+            setDisplayMessages([]);
+          } else {
+            setSession(existing);
+            setStoredMessages(messages);
+            setIslands(loadedIslands);
 
           // Restore assess state from session
           const sData = sessionData as { island_step?: string; assess_state?: { round: number; proven: string[]; weak: string[]; remediationCount: number; nextFocus: string } } | undefined;
@@ -182,6 +199,7 @@ export default function LearnPage() {
                 text: m.content,
               })),
           );
+          }
         }
       }
     }
@@ -521,7 +539,7 @@ export default function LearnPage() {
   // reach complete without it (e.g. legacy flows).
   const completionSavedRef = useRef(false);
   useEffect(() => {
-    if (phase.isComplete && session && !completionSavedRef.current) {
+    if (phase.isComplete && session && islands.length > 0 && !completionSavedRef.current) {
       completionSavedRef.current = true;
       saveCheckpoint(phase.currentCheckpoint, "completed", {
         island_step: "teach",
@@ -531,7 +549,7 @@ export default function LearnPage() {
     if (!phase.isComplete) {
       completionSavedRef.current = false;
     }
-  }, [phase.isComplete, phase.currentCheckpoint, session, saveCheckpoint]);
+  }, [phase.isComplete, phase.currentCheckpoint, session, saveCheckpoint, islands.length]);
 
   const generateIslandsAndStart = async () => {
     if (!topic || !subjectId || !topicId) return;
@@ -545,7 +563,14 @@ export default function LearnPage() {
         body: JSON.stringify({ topicId }),
       });
 
-      if (!res.ok) throw new Error("Island generation failed");
+      if (!res.ok) {
+        // Surface the server's message (Hungarian, specific) instead of a
+        // generic failure so the next error diagnoses itself.
+        const serverMessage = (await res.text()).trim();
+        throw new Error(
+          serverMessage || `Island generation failed (${res.status})`,
+        );
+      }
 
       const raw: unknown = await res.json();
       // Validate AI output shape before it touches session state — malformed
@@ -609,7 +634,14 @@ export default function LearnPage() {
       autoStartRef.current = true;
     } catch (err) {
       console.error("Failed to start learning:", err);
-      setError("Nem sikerült elindítani a tanulást. Próbáld újra!");
+      const message = err instanceof Error ? err.message : "";
+      // Server messages are already user-facing Hungarian; anything else
+      // (network failure, 503) gets the generic retry prompt.
+      setError(
+        message && !message.startsWith("Island generation failed")
+          ? message
+          : "Nem sikerült elindítani a tanulást. Próbáld újra!",
+      );
     } finally {
       setIsGeneratingIslands(false);
     }
@@ -618,10 +650,22 @@ export default function LearnPage() {
   const handleStart = async () => {
     if (isGeneratingIslands) return;
 
+    if (islands.length === 0) {
+      // No usable plan (shouldn't happen after init cleanup) — generate fresh.
+      await generateIslandsAndStart();
+      return;
+    }
+
     if (session && session.status === "in_progress" && session.current_checkpoint > 0) {
       // Resume: keep the restored islandStep (teach/assess/remediation from
-      // initPage) — never force back to teach.
-      phase.resumeFrom(session.current_checkpoint);
+      // initPage) — never force back to teach. Clamp stale checkpoints
+      // (e.g. saved against an older, longer plan) into the current plan
+      // instead of landing on the completion screen.
+      const safeCheckpoint = Math.min(session.current_checkpoint, islands.length - 1);
+      if (safeCheckpoint !== session.current_checkpoint) {
+        setSession({ ...session, current_checkpoint: safeCheckpoint });
+      }
+      phase.resumeFrom(safeCheckpoint);
     } else if (session && session.status === "in_progress") {
       setIslandStep("teach");
       phase.start();
@@ -900,8 +944,8 @@ export default function LearnPage() {
           </div>
         )}
 
-        {/* Idle — pre-start */}
-        {phase.subPhase === "idle" && !isGeneratingIslands && (
+        {/* Idle — pre-start (hidden once complete) */}
+        {phase.subPhase === "idle" && !phase.isComplete && !isGeneratingIslands && (
           <div className="mt-8 rounded-2xl border border-dashed border-zinc-300 p-12 text-center dark:border-zinc-700">
             <p className="mb-1 text-lg font-medium text-zinc-600 dark:text-zinc-400">📚 Készen állsz tanulni?</p>
             <p className="mb-6 text-sm text-zinc-400">Lumi először elemzi a tananyagot, majd egyéni tanulási tervet készít.</p>
@@ -960,8 +1004,8 @@ export default function LearnPage() {
           </div>
         )}
 
-        {/* Completion */}
-        {phase.isComplete && (
+        {/* Completion — only with a real plan; empty islands can never complete */}
+        {phase.isComplete && islands.length > 0 && (
           <CompletionScreen
             topicName={topic.name}
             topicId={topicId}

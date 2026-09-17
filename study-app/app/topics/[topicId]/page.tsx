@@ -74,7 +74,8 @@ export default function TopicDetailPage() {
       .eq("status", "in_progress")
       .order("updated_at", { ascending: false })
       .limit(1)
-      .single();
+      // No session yet is normal — maybeSingle avoids a noisy 406.
+      .maybeSingle();
 
     if (latestSession) {
       setCurrentCheckpoint(latestSession.current_checkpoint);
@@ -127,6 +128,11 @@ export default function TopicDetailPage() {
   }, [initPage]);
 
   const totalCheckpoints = islandTitles ? islandTitles.length : FALLBACK_TOTAL_CHECKPOINTS;
+  // Without a known plan the checkpoint may be stale (e.g. saved against an
+  // older plan) — never claim progress or completion from it.
+  const hasPlan = !!islandTitles && islandTitles.length > 0;
+  const roadmapCheckpoint = hasPlan ? currentCheckpoint : 0;
+  const isCompleted = hasPlan && currentCheckpoint >= islandTitles.length;
 
   if (pageLoading) {
     return (
@@ -180,7 +186,7 @@ export default function TopicDetailPage() {
         <div className="mb-10">
           <ProgressRoadmap
             topicName={topic.name}
-            currentCheckpoint={currentCheckpoint}
+            currentCheckpoint={roadmapCheckpoint}
             totalCheckpoints={totalCheckpoints}
             avatarUrl={avatarUrl}
             topicId={topicId}
@@ -261,7 +267,7 @@ export default function TopicDetailPage() {
                 </div>
               )}
 
-              {currentCheckpoint === totalCheckpoints && (
+              {isCompleted && (
                 <div className="rounded-2xl border border-zinc-200/60 bg-white p-6 shadow-sm dark:border-zinc-800/60 dark:bg-zinc-900">
                   <p className="text-sm text-zinc-500">Minden részt teljesítettél! 🎉</p>
                 </div>

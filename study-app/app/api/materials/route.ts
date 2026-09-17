@@ -72,14 +72,30 @@ export async function POST(req: Request) {
 
     let extractedText = "";
     let pageCount = 0;
+    let pdfInstance: PDFParse | null = null;
     try {
       const buffer = Buffer.from(await file.arrayBuffer());
-      const pdfInstance = new PDFParse({ data: buffer });
+      pdfInstance = new PDFParse({ data: buffer });
       const result = await pdfInstance.getText();
       pageCount = result.pages.length;
-      extractedText = result.pages.map((p: { text: string }) => p.text).join("\n\n");
+      // Prefer the library's concatenated output; fall back to joining
+      // pages (some documents report empty page slices with text set).
+      const joined = result.pages.map((p: { text: string }) => p.text).join("\n\n");
+      extractedText = (result.text?.trim() ? result.text : joined).trim();
+      console.log(
+        `PDF extraction: "${file.name}" (${file.size} bytes) → ${pageCount} pages, ${extractedText.length} chars`,
+      );
     } catch (err) {
-      console.error("PDF text extraction failed:", err);
+      console.error(`PDF text extraction failed for "${file.name}" (${file.size} bytes):`, err);
+    } finally {
+      // Always release the worker/document — leaks degrade later parses.
+      if (pdfInstance) {
+        try {
+          await pdfInstance.destroy();
+        } catch (err) {
+          console.error("PDF parser destroy failed:", err);
+        }
+      }
     }
 
     if (pageCount > MAX_PDF_PAGES) {
