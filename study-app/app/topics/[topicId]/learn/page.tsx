@@ -1009,10 +1009,16 @@ function getPhaseInstruction(
 
     if (islandStep === "assess" && !isFollowUp) {
       const focus = assessQuestionRef || currentIsland.key_concepts[0] || "";
-      const probe = currentIsland.probe_questions[0]
-        ? ` Kiindulásnak használhatod ezt a kérdést: "${currentIsland.probe_questions[0]}".`
-        : "";
-      return `Fázis: Ellenőrzés — fordított tanár. Te most egy lelkes, de értetlen diák vagy, a felhasználó a tanárod. A(z) "${currentIsland.title}" témából a következő fogalmat NEM érted: "${focus}". Tegyél fel EGYETLEN természetes, diákos kérdést erről a fogalomról — olyat, amire csak valódi megértéssel lehet jól válaszolni, bemagolt definícióval nem. Ne magyarázz, ne segíts, csak kérdezz. Beszélj magyarul.${probe}`;
+      // Prefer a probe question about the focus concept; a mismatched hint
+      // would steer Lumi at the wrong concept.
+      const focusWords = focus.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
+      const probe =
+        currentIsland.probe_questions.find((q) => {
+          const lower = q.toLowerCase();
+          return focusWords.some((w) => lower.includes(w));
+        }) ?? null;
+      const probeHint = probe ? ` Kiindulásnak használhatod ezt a kérdést: "${probe}".` : "";
+      return `Fázis: Ellenőrzés — fordított tanár. Te most egy lelkes, de értetlen diák vagy, a felhasználó a tanárod. A(z) "${currentIsland.title}" témából a következő fogalmat NEM érted: "${focus}". Tegyél fel EGYETLEN természetes, diákos kérdést erről a fogalomról — olyat, amire csak valódi megértéssel lehet jól válaszolni, bemagolt definícióval nem. Ne magyarázz, ne segíts, csak kérdezz. Beszélj magyarul.${probeHint}`;
     }
 
     if ((islandStep === "assess" || islandStep === "remediation") && isFollowUp) {

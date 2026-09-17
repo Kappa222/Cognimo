@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 
@@ -25,6 +25,22 @@ export default function ProgressRoadmap({
 }: ProgressRoadmapProps) {
   const [offset, setOffset] = useState(0);
   const maxOffset = Math.max(0, totalCheckpoints - VISIBLE_COUNT);
+  const isCompleted = totalCheckpoints > 0 && currentCheckpoint >= totalCheckpoints;
+
+  // Keep the current island visible and the offset in range when the
+  // checkpoint or island count changes.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setOffset((prev) => {
+      const clampedMax = Math.max(0, totalCheckpoints - VISIBLE_COUNT);
+      let next = Math.min(prev, clampedMax);
+      if (currentCheckpoint < next) next = currentCheckpoint;
+      if (currentCheckpoint >= next + VISIBLE_COUNT) {
+        next = currentCheckpoint - VISIBLE_COUNT + 1;
+      }
+      return Math.max(0, Math.min(next, clampedMax));
+    });
+  }, [currentCheckpoint, totalCheckpoints]);
 
   const visibleIslands = Array.from({ length: totalCheckpoints }, (_, i) => ({
     index: i,
@@ -35,13 +51,33 @@ export default function ProgressRoadmap({
 
   const visible = visibleIslands.slice(offset, offset + VISIBLE_COUNT);
 
+  if (totalCheckpoints === 0) {
+    return (
+      <div className="w-full">
+        <h2 className="mb-6 text-center text-2xl font-bold tracking-tight">
+          {topicName}
+        </h2>
+        <div className="rounded-3xl border border-dashed border-zinc-300 p-12 text-center dark:border-zinc-700">
+          <p className="text-zinc-500">Még nincs tanulási terv.</p>
+          <p className="text-xs text-zinc-400">Indíts tanulást a terv elkészítéséhez.</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="w-full">
       <h2 className="mb-6 text-center text-2xl font-bold tracking-tight">
         {topicName}
       </h2>
 
-      <div className="relative rounded-3xl border border-zinc-200/60 bg-gradient-to-b from-zinc-50/50 to-white p-6 shadow-sm dark:border-zinc-800/60 dark:from-zinc-900/50 dark:to-zinc-900">
+      {isCompleted && (
+        <p className="mb-4 text-center text-sm font-medium text-emerald-600 dark:text-emerald-400">
+          🎉 Minden részt teljesítettél!
+        </p>
+      )}
+
+      <div className="relative rounded-3xl border border-zinc-200/60 bg-gradient-to-b from-zinc-50/50 to-white p-6 pt-16 shadow-sm dark:border-zinc-800/60 dark:from-zinc-900/50 dark:to-zinc-900">
         <div className="relative flex items-center justify-center gap-2">
           <button
             type="button"
@@ -55,10 +91,10 @@ export default function ProgressRoadmap({
             </svg>
           </button>
 
-          <div className="flex items-center gap-3 overflow-hidden">
+          <div className="flex items-center gap-3 overflow-visible">
             {visible.map((island) => (
               <div key={island.index} className="relative flex flex-col items-center">
-                {island.isCurrent && (
+                {(island.isCurrent || (isCompleted && island.index === totalCheckpoints - 1)) && (
                   <div className="absolute -top-14 z-10">
                     <div className="relative">
                       <div className="absolute inset-0 animate-ping rounded-full bg-accent/30" style={{ animationDuration: "2s" }} />
@@ -122,7 +158,11 @@ export default function ProgressRoadmap({
             href={`/topics/${topicId}/learn`}
             className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-accent px-8 py-3 text-base font-semibold text-white shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:bg-violet-600 hover:shadow-md active:scale-[0.98]"
           >
-            {currentCheckpoint === 0 ? "Kezdés" : "Folytatás"}
+            {currentCheckpoint === 0
+              ? "Kezdés"
+              : isCompleted
+                ? "Visszanézés"
+                : "Folytatás"}
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5">
               <path fillRule="evenodd" d="M3 10a.75.75 0 01.75-.75h10.638L10.23 5.29a.75.75 0 111.04-1.08l5.5 5.25a.75.75 0 010 1.08l-5.5 5.25a.75.75 0 11-1.04-1.08l4.158-3.96H3.75A.75.75 0 013 10z" clipRule="evenodd" />
             </svg>

@@ -15,16 +15,21 @@ export default function ResponseInput({
 }: ResponseInputProps) {
   const [text, setText] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const composingRef = useRef(false);
+  const focusedOnceRef = useRef(false);
 
+  // Focus on first appearance only — refocusing every turn pops the mobile
+  // keyboard while the user is still reading Lumi's answer.
   useEffect(() => {
-    if (!disabled && inputRef.current) {
+    if (!disabled && !focusedOnceRef.current && inputRef.current) {
+      focusedOnceRef.current = true;
       inputRef.current.focus();
     }
   }, [disabled]);
 
   const handleSend = () => {
     const trimmed = text.trim();
-    if (!trimmed || disabled) return;
+    if (!trimmed || disabled || composingRef.current) return;
     onSend(trimmed);
     setText("");
   };
@@ -35,9 +40,16 @@ export default function ResponseInput({
         ref={inputRef}
         type="text"
         value={text}
+        maxLength={2000}
         onChange={(e) => setText(e.target.value)}
+        onCompositionStart={() => {
+          composingRef.current = true;
+        }}
+        onCompositionEnd={() => {
+          composingRef.current = false;
+        }}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
+          if (e.key === "Enter" && !e.shiftKey && !composingRef.current) {
             e.preventDefault();
             handleSend();
           }

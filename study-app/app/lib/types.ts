@@ -1,23 +1,14 @@
-export type SessionPhase = "explain" | "inverted-teacher" | "reverse-teaching" | "quiz" | "complete";
+export type SessionPhase = "explain" | "complete";
 
 export type SessionSubPhase =
   | "idle"
-  | "question-prompt"
   | "waiting-response"
   | "ai-responding"
-  | "quiz-answering"
-  | "quiz-result"
   | "complete";
 
 export interface SessionStep {
   phase: SessionPhase;
   checkpoint: number;
-}
-
-export interface QuizQuestionData {
-  text: string;
-  options: string[];
-  correctIndex: number;
 }
 
 export interface Topic {
@@ -82,14 +73,6 @@ export interface Island {
   probe_questions: string[];
   chunk_indices?: number[];
   chunk_refs?: { material_id: string; idx: number }[];
-}
-
-export interface CompletionStats {
-  score: number;
-  totalQuestions: number;
-  exercisesCompleted: number;
-  totalExercises: number;
-  xpEarned: number;
 }
 
 export interface EvaluateVerdict {

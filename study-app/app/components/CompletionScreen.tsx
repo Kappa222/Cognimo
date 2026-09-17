@@ -23,27 +23,43 @@ export default function CompletionScreen({
 }: CompletionScreenProps) {
   const [concepts, setConcepts] = useState<ConceptStat[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
     const fetchConcepts = async () => {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-      const { data } = await supabase
+      if (cancelled) return;
+      if (!user) {
+        setLoading(false);
+        return;
+      }
+      const { data, error } = await supabase
         .from("concept_mastery")
         .select("concept, status")
         .eq("user_id", user.id)
         .eq("topic_id", topicId);
-      if (data) setConcepts(data);
+      if (cancelled) return;
+      if (error) {
+        setLoadError(true);
+      } else if (data) {
+        setConcepts(data);
+      }
       setLoading(false);
     };
     fetchConcepts();
+    return () => {
+      cancelled = true;
+    };
   }, [topicId]);
 
   const solid = concepts.filter((c) => c.status === "solid").length;
   const seen = concepts.filter((c) => c.status === "seen").length;
   const shaky = concepts.filter((c) => c.status === "shaky").length;
+  const unseen = concepts.filter((c) => c.status === "unseen").length;
   const shakyConcepts = concepts.filter((c) => c.status === "shaky").map((c) => c.concept);
-  const total = concepts.length;
+  // Only assessed concepts count toward totals — unseen rows carry no evidence.
+  const assessed = solid + seen + shaky;
 
   const xpEarned = solid * 15 + seen * 8 + shaky * 3;
 
@@ -62,21 +78,25 @@ export default function CompletionScreen({
           <div className="mt-6 flex justify-center">
             <div className="h-6 w-6 animate-spin rounded-full border-2 border-zinc-300 border-t-accent" />
           </div>
+        ) : loadError ? (
+          <p className="mt-6 text-sm text-zinc-500">
+            Az eredmények most nem tölthetők be, de a tanulást befejezted! 🎉
+          </p>
         ) : (
           <>
             <div className="mt-6 grid gap-3">
               <div className="rounded-xl border border-zinc-200/60 bg-zinc-50 px-4 py-3 dark:border-zinc-700 dark:bg-zinc-800/50">
                 <p className="text-xs uppercase tracking-wide text-zinc-400">
-                  Kulcsfogalmak
+                  Értékelt kulcsfogalmak
                 </p>
-                <p className="text-lg font-bold text-accent">{total}</p>
+                <p className="text-lg font-bold text-accent">{assessed}</p>
               </div>
               <div className="rounded-xl border border-emerald-200/60 bg-emerald-50 px-4 py-3 dark:border-emerald-800 dark:bg-emerald-950/30">
                 <p className="text-xs uppercase tracking-wide text-emerald-500">
                   Elsajátított (solid)
                 </p>
                 <p className="text-lg font-bold text-emerald-600 dark:text-emerald-400">
-                  {solid} {solid === 1 ? "fogalom" : "fogalom"} &middot; +{solid * 15} XP
+                  {solid} {solid === 1 ? "fogalom" : "fogalmak"} &middot; +{solid * 15} XP
                 </p>
               </div>
               <div className="rounded-xl border border-amber-200/60 bg-amber-50 px-4 py-3 dark:border-amber-800 dark:bg-amber-950/30">
@@ -84,7 +104,7 @@ export default function CompletionScreen({
                   Megértett (seen)
                 </p>
                 <p className="text-lg font-bold text-amber-600 dark:text-amber-400">
-                  {seen} {seen === 1 ? "fogalom" : "fogalom"} &middot; +{seen * 8} XP
+                  {seen} {seen === 1 ? "fogalom" : "fogalmak"} &middot; +{seen * 8} XP
                 </p>
               </div>
               <div className="rounded-xl border border-red-200/60 bg-red-50 px-4 py-3 dark:border-red-800 dark:bg-red-950/30">
@@ -92,9 +112,14 @@ export default function CompletionScreen({
                   Gyakorlandó (shaky)
                 </p>
                 <p className="text-lg font-bold text-red-600 dark:text-red-400">
-                  {shaky} {shaky === 1 ? "fogalom" : "fogalom"} &middot; +{shaky * 3} XP
+                  {shaky} {shaky === 1 ? "fogalom" : "fogalmak"} &middot; +{shaky * 3} XP
                 </p>
               </div>
+              {unseen > 0 && (
+                <p className="text-xs text-zinc-400">
+                  +{unseen} {unseen === 1 ? "fogalom" : "fogalmak"} még nem került értékelésre
+                </p>
+              )}
               <div className="rounded-xl border border-zinc-200/60 bg-zinc-50 px-4 py-3 dark:border-zinc-700 dark:bg-zinc-800/50">
                 <p className="text-xs uppercase tracking-wide text-zinc-400">
                   Összes megszerzett XP
@@ -109,8 +134,8 @@ export default function CompletionScreen({
                   Ehhez érdemes visszatérned:
                 </p>
                 <ul className="mt-1 list-inside list-disc text-sm text-zinc-600 dark:text-zinc-400">
-                  {shakyConcepts.map((c) => (
-                    <li key={c}>{c}</li>
+                  {shakyConcepts.map((c, i) => (
+                    <li key={`${c}-${i}`}>{c}</li>
                   ))}
                 </ul>
               </div>
@@ -121,7 +146,8 @@ export default function CompletionScreen({
         <div className="mt-6 flex justify-center gap-3">
           <button
             onClick={onRestart}
-            className="cursor-pointer rounded-lg border border-zinc-200 bg-white px-5 py-2.5 text-sm font-medium text-zinc-700 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-sm active:scale-[0.98] dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+            disabled={loading}
+            className="cursor-pointer rounded-lg border border-zinc-200 bg-white px-5 py-2.5 text-sm font-medium text-zinc-700 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-sm active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
           >
             🔄 Újratanulás
           </button>
