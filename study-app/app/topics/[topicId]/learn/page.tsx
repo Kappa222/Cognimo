@@ -609,7 +609,7 @@ export default function LearnPage() {
   }
 
   const characterName = "Lumi";
-  const characterAvatar = "/avatars/lumi.svg";
+  const characterAvatar = "/avatars/lumi.png";
 
   const allMessages = [
     ...displayMessages,

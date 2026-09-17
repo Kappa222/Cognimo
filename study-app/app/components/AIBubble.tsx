@@ -20,9 +20,9 @@ export default function AIBubble({
       <Image
         src={avatarUrl}
         alt={characterName}
-        width={32}
-        height={32}
-        className="h-8 w-8 rounded-full object-cover ring-2 ring-zinc-200 dark:ring-zinc-700"
+        width={40}
+        height={40}
+        className="h-10 w-10 shrink-0 rounded-full object-cover ring-2 ring-zinc-200 dark:ring-zinc-700"
       />
       <div className="max-w-[80%] rounded-2xl rounded-bl-md border border-zinc-200/60 bg-white px-4 py-3 shadow-sm dark:border-zinc-800/60 dark:bg-zinc-900">
         <p className="mb-1 text-xs font-semibold text-accent">{characterName}</p>

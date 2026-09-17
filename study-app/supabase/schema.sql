@@ -195,7 +195,7 @@ insert into characters (name, description, system_prompt, avatar_url, is_default
     'Lumi',
     'Egy barátságos tanulótárs. Tanulj együtt Lumi-val.',
     'You are Lumi, a friendly and encouraging study partner. Your goal is to help the user understand the topic they are studying. Explain concepts clearly, ask questions to check understanding, and provide examples. Be patient, supportive, and adapt to the user''s level of knowledge.',
-    '/avatars/lumi.svg',
+    '/avatars/lumi.png',
     true
   )
 on conflict do nothing;
