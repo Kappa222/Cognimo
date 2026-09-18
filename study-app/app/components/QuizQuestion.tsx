@@ -32,7 +32,7 @@ export default function QuizQuestion({
         {question.text}
       </p>
 
-      <div className="flex flex-col gap-2">
+      <div role="radiogroup" aria-label={question.text} className="flex flex-col gap-2">
         {question.options.map((option, i) => {
           let borderStyle =
             "border-zinc-200/60 hover:border-accent/30 dark:border-zinc-700 dark:hover:border-accent/40";
@@ -63,9 +63,12 @@ export default function QuizQuestion({
           return (
             <button
               key={i}
+              type="button"
+              role="radio"
+              aria-checked={selectedAnswer === i}
               onClick={() => !showResult && onSelect(i)}
               disabled={showResult}
-              className={`flex items-center gap-3 rounded-xl border px-4 py-3 text-left text-sm transition-all duration-200 ${
+              className={`flex items-center gap-3 rounded-xl border px-4 py-3 text-left text-sm transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 ${
                 showResult
                   ? "cursor-default"
                   : "cursor-pointer hover:-translate-y-0.5 hover:shadow-sm active:scale-[0.98]"

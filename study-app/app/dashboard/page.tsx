@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../lib/supabase";
+import { DashboardSkeleton } from "../components/LoadingSkeleton";
 
 interface Session {
   id: string;
@@ -46,31 +47,35 @@ export default function DashboardPage() {
       .select(`
         id, status, current_checkpoint, total_checkpoints, updated_at,
         topic_id,
-        topics!inner(name),
-        subjects!inner(name)
+        topics(name),
+        subjects(name)
       `)
       .eq("user_id", userId)
-      .neq("status", "completed")
+      .eq("status", "in_progress")
       .order("updated_at", { ascending: false })
       .limit(5);
 
     if (s) {
       setSessions(
-        (s as SessionRow[]).map((row) => ({
-          id: row.id,
-          status: row.status,
-          current_checkpoint: row.current_checkpoint,
-          total_checkpoints: row.total_checkpoints,
-          updated_at: row.updated_at,
-          topic_id: row.topic_id,
-          topic_name: (Array.isArray(row.topics) ? row.topics[0]?.name : row.topics?.name) ?? "",
-          subject_name: (Array.isArray(row.subjects) ? row.subjects[0]?.name : row.subjects?.name) ?? "",
-        })),
+        (s as SessionRow[])
+          .map((row) => ({
+            id: row.id,
+            status: row.status,
+            current_checkpoint: row.current_checkpoint,
+            total_checkpoints: row.total_checkpoints,
+            updated_at: row.updated_at,
+            topic_id: row.topic_id,
+            topic_name: (Array.isArray(row.topics) ? row.topics[0]?.name : row.topics?.name) ?? "",
+            subject_name: (Array.isArray(row.subjects) ? row.subjects[0]?.name : row.subjects?.name) ?? "",
+          }))
+          // Drop orphaned sessions (topic deleted → topic_id null): without a
+          // topic the card link would point at /topics/null/learn.
+          .filter((session) => session.topic_id && session.topic_name),
       );
     }
 
     const { count: tCount } = await supabase
-      .from("chat_sessions")
+      .from("topics")
       .select("*", { count: "exact", head: true })
       .eq("user_id", userId);
 
@@ -121,10 +126,9 @@ export default function DashboardPage() {
   };
 
   const statusLabels: Record<string, string> = {
-    exercises: "Gyakorlatok",
-    teaching: "Tanítás",
-    quiz: "Kvíz",
+    in_progress: "Folytatás",
     completed: "Kész",
+    abandoned: "Félbehagyott",
   };
 
   const progressDots = (current: number, total: number) => {
@@ -144,14 +148,7 @@ export default function DashboardPage() {
   };
 
   if (loading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div className="flex flex-col items-center gap-3">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-300 border-t-accent" />
-          <p className="text-sm text-zinc-500">Betöltés...</p>
-        </div>
-      </div>
-    );
+    return <DashboardSkeleton />;
   }
 
   return (

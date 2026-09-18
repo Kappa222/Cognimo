@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "../../../../lib/supabase";
 import ConfirmModal from "../../../components/ConfirmModal";
+import { MaterialsSkeleton } from "../../../components/LoadingSkeleton";
 
 interface Material {
   id: string;
@@ -324,14 +325,7 @@ export default function MaterialsPage() {
   };
 
   if (pageLoading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div className="flex flex-col items-center gap-3">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-300 border-t-accent" />
-          <p className="text-sm text-zinc-500">Betöltés...</p>
-        </div>
-      </div>
-    );
+    return <MaterialsSkeleton />;
   }
 
   if (error) {

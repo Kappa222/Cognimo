@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useRef } from "react";
+
 interface ConfirmModalProps {
   open: boolean;
   title: string;
@@ -23,11 +25,26 @@ export default function ConfirmModal({
   variant = "danger",
   disabled = false,
 }: ConfirmModalProps) {
+  const cancelRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    cancelRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !disabled) onCancel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onCancel, disabled]);
+
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onCancel}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onCancel}>
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
         className="w-full max-w-sm rounded-2xl border border-zinc-200/60 bg-white p-6 shadow-lg dark:border-zinc-800/60 dark:bg-zinc-900"
         onClick={(e) => e.stopPropagation()}
       >
@@ -37,8 +54,9 @@ export default function ConfirmModal({
         </p>
         <div className="mt-6 flex justify-end gap-3">
           <button
+            ref={cancelRef}
             onClick={onCancel}
-            className="cursor-pointer rounded-lg border border-zinc-200 px-4 py-2 text-sm font-medium text-zinc-600 transition-all duration-200 hover:-translate-y-0.5 hover:bg-zinc-50 hover:shadow-sm focus:outline-none focus:ring-2 focus:ring-zinc-400/30 active:scale-[0.98] dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+            className="cursor-pointer rounded-lg border border-zinc-200 px-4 py-2 text-sm font-medium text-zinc-600 transition-all duration-200 hover:-translate-y-0.5 hover:bg-zinc-50 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400/50 active:scale-[0.98] dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
           >
             {cancelLabel}
           </button>

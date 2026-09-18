@@ -6,6 +6,7 @@ import Link from "next/link";
 import { supabase } from "../../../lib/supabase";
 import ProgressRoadmap from "../../components/ProgressRoadmap";
 import StatisticsTab from "../../components/StatisticsTab";
+import { TopicDetailSkeleton } from "../../components/LoadingSkeleton";
 
 const FALLBACK_TOTAL_CHECKPOINTS = 7;
 
@@ -135,14 +136,7 @@ export default function TopicDetailPage() {
   const isCompleted = hasPlan && currentCheckpoint >= islandTitles.length;
 
   if (pageLoading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div className="flex flex-col items-center gap-3">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-300 border-t-accent" />
-          <p className="text-sm text-zinc-500">Betöltés...</p>
-        </div>
-      </div>
-    );
+    return <TopicDetailSkeleton />;
   }
 
   if (error) {
@@ -204,12 +198,14 @@ export default function TopicDetailPage() {
         </Link>
       </div>
 
-      <div className="mb-8 flex gap-2 border-b border-zinc-200 dark:border-zinc-800">
+      <div role="tablist" aria-label="Téma nézetek" className="mb-8 flex gap-2 border-b border-zinc-200 dark:border-zinc-800">
         {tabs.map((t) => (
           <button
             key={t}
+            role="tab"
+            aria-selected={activeTab === t}
             onClick={() => setActiveTab(t)}
-            className={`px-4 py-2 text-sm font-medium transition-colors ${
+            className={`rounded-t-lg px-4 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 ${
               activeTab === t
                 ? "border-b-2 border-accent text-accent"
                 : "text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"

@@ -83,7 +83,7 @@ export default function ProgressRoadmap({
             type="button"
             onClick={() => setOffset(Math.max(0, offset - 1))}
             disabled={offset === 0}
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-500 transition-all hover:-translate-y-0.5 hover:border-zinc-300 hover:shadow-md disabled:opacity-30 disabled:hover:translate-y-0 disabled:hover:shadow-none dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-500 transition-all hover:-translate-y-0.5 hover:border-zinc-300 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:opacity-30 disabled:hover:translate-y-0 disabled:hover:shadow-none dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400"
             aria-label="Előző"
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5">
@@ -91,7 +91,7 @@ export default function ProgressRoadmap({
             </svg>
           </button>
 
-          <div className="flex items-center gap-3 overflow-visible">
+          <div className="flex items-center gap-1.5 overflow-x-auto px-1 py-1 sm:gap-3">
             {visible.map((island) => (
               <div key={island.index} className="relative flex flex-col items-center">
                 {(island.isCurrent || (isCompleted && island.index === totalCheckpoints - 1)) && (
@@ -110,7 +110,7 @@ export default function ProgressRoadmap({
                 )}
 
                 <div
-                  className={`flex h-[68px] w-[68px] items-center justify-center rounded-full border-2 text-lg font-bold transition-all ${
+                  className={`flex h-12 w-12 items-center justify-center rounded-full border-2 text-base font-bold transition-all sm:h-[68px] sm:w-[68px] sm:text-lg ${
                     island.isCompleted
                       ? "border-accent bg-accent text-white shadow-sm"
                       : island.isCurrent
@@ -132,7 +132,10 @@ export default function ProgressRoadmap({
                 </div>
 
                 {islandTitles && island.index < islandTitles.length ? (
-                  <span className="mt-1 max-w-[68px] truncate text-center text-[10px] font-medium text-zinc-500 dark:text-zinc-400">
+                  <span
+                    title={islandTitles[island.index]}
+                    className="mt-1 max-w-12 truncate text-center text-[10px] font-medium text-zinc-500 sm:max-w-[68px] dark:text-zinc-400"
+                  >
                     {islandTitles[island.index]}
                   </span>
                 ) : null}
@@ -144,7 +147,7 @@ export default function ProgressRoadmap({
             type="button"
             onClick={() => setOffset(Math.min(maxOffset, offset + 1))}
             disabled={offset >= maxOffset}
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-500 transition-all hover:-translate-y-0.5 hover:border-zinc-300 hover:shadow-md disabled:opacity-30 disabled:hover:translate-y-0 disabled:hover:shadow-none dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-500 transition-all hover:-translate-y-0.5 hover:border-zinc-300 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:opacity-30 disabled:hover:translate-y-0 disabled:hover:shadow-none dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400"
             aria-label="Következő"
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5">

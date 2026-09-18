@@ -11,6 +11,7 @@ import AIBubble from "../../../components/AIBubble";
 import UserBubble from "../../../components/UserBubble";
 import ResponseInput from "../../../components/ResponseInput";
 import CompletionScreen from "../../../components/CompletionScreen";
+import { LearnSkeleton } from "../../../components/LoadingSkeleton";
 
 interface DisplayMessage {
   role: "ai" | "user";
@@ -856,14 +857,7 @@ export default function LearnPage() {
   };
 
   if (pageLoading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div className="flex flex-col items-center gap-3">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-300 border-t-accent" />
-          <p className="text-sm text-zinc-500">Betöltés...</p>
-        </div>
-      </div>
-    );
+    return <LearnSkeleton />;
   }
 
   if (error) {

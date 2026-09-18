@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { supabase } from "../../lib/supabase";
 import ConfirmModal from "../components/ConfirmModal";
+import { SettingsSkeleton } from "../components/LoadingSkeleton";
 
 const AVATARS = [
   { value: "/avatars/user-female.svg" },
@@ -102,14 +103,7 @@ export default function SettingsPage() {
   };
 
   if (pageLoading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div className="flex flex-col items-center gap-3">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-300 border-t-accent" />
-          <p className="text-sm text-zinc-500">Betöltés...</p>
-        </div>
-      </div>
-    );
+    return <SettingsSkeleton />;
   }
 
   return (

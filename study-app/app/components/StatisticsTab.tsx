@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { supabase } from "../../lib/supabase";
+import { StatisticsSkeleton } from "./LoadingSkeleton";
 
 interface ConceptStat {
   concept: string;
@@ -68,8 +69,8 @@ export default function StatisticsTab({ topicId }: { topicId: string }) {
 
   if (loading) {
     return (
-      <div className="flex justify-center py-12 animate-fade-in-up">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-zinc-300 border-t-accent" />
+      <div className="animate-fade-in-up">
+        <StatisticsSkeleton />
       </div>
     );
   }

@@ -39,6 +39,7 @@ export default function ResponseInput({
       <input
         ref={inputRef}
         type="text"
+        aria-label="Válasz"
         value={text}
         maxLength={2000}
         onChange={(e) => setText(e.target.value)}

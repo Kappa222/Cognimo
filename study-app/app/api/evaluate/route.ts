@@ -24,13 +24,6 @@ Minden MÉG NEM IGAZOLT kulcsfogalomhoz adj ítéletet:
 - "not_required": a feltett kérdés nem kívánta meg ezt a fogalmat, és a felhasználó nem is tért ki rá (ez NEM hiba)
 - "missing": a kérdés megkívánta volna, de a felhasználó nem tért ki rá
 
-Minden MÉG NEM IGAZOLT kulcsfogalomhoz adj ítéletet:
-- "correct": helyesen és érthetően magyarázta
-- "partial": említette, de hiányosan vagy pontatlanul
-- "wrong": tévesen magyarázta
-- "not_required": a feltett kérdés nem kívánta meg ezt a fogalmat, és a felhasználó nem is tért ki rá (ez NEM hiba)
-- "missing": a kérdés megkívánta volna, de a felhasználó nem tért ki rá
-
 Szigorúsági szabályok:
 - A helyes VÉGEREDMÉNY önmagában nem elég — a magyarázatnak az OKOT/MŰKÖDÉST is tartalmaznia kell
 - Bemagolt definíció szó szerinti visszamondása legfeljebb "partial"
