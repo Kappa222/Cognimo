@@ -76,12 +76,14 @@ export async function POST(req: Request) {
 
   if (!topic) return new Response("Topic not found", { status: 404 });
 
+  // Fetch every row including null-content ones (legacy failed extractions):
+  // otherwise "uploaded but unreadable" is indistinguishable from "nothing
+  // uploaded" and the user gets a false "Nincs tananyag" message.
   const { data: materials, error: materialsError } = await supabase
     .from("study_materials")
     .select("id, content, title")
     .eq("topic_id", topicId)
     .eq("user_id", user.id)
-    .not("content", "is", null)
     .order("created_at", { ascending: true });
 
   if (materialsError) {

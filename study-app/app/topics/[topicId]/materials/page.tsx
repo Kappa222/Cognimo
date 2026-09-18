@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "../../../../lib/supabase";
+import { MIN_READABLE_CHARS } from "../../../../lib/chunks";
 import ConfirmModal from "../../../components/ConfirmModal";
 import { MaterialsSkeleton } from "../../../components/LoadingSkeleton";
 
@@ -45,6 +46,17 @@ function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// Server-side extraction failures (422) can never succeed on retry — the
+// same file parses to the same empty result. Only transient/network errors
+// are worth retrying.
+function isRetryablePdfError(error: string): boolean {
+  if (!error) return true;
+  if (error === "Csak PDF fájl tölthető fel") return false;
+  if (error === "A PDF túl nagy (maximum 25 MB)") return false;
+  if (error.startsWith("A PDF szövegét nem sikerült")) return false;
+  return true;
 }
 
 let queuedPdfCounter = 0;
@@ -243,7 +255,7 @@ export default function MaterialsPage() {
     const pendingIds = new Set(queue.filter((q) => q.status === "pending").map((q) => q.id));
     const retryIds = new Set(
       queue
-        .filter((q) => q.status === "error" && q.error !== "Csak PDF fájl tölthető fel" && q.error !== "A PDF túl nagy (maximum 25 MB)")
+        .filter((q) => q.status === "error" && isRetryablePdfError(q.error))
         .map((q) => q.id),
     );
     const idsToRun = new Set([...pendingIds, ...retryIds]);
@@ -294,7 +306,7 @@ export default function MaterialsPage() {
     if (!topic || pdfUploading) return;
     const item = queue.find((q) => q.id === id);
     if (!item || item.status !== "error") return;
-    if (item.error === "Csak PDF fájl tölthető fel" || item.error === "A PDF túl nagy (maximum 25 MB)") return;
+    if (!isRetryablePdfError(item.error)) return;
     setPdfUploading(true);
     setQueue((prev) => prev.map((q) => (q.id === id ? { ...q, status: "uploading" as QueuedPdfStatus, error: "" } : q)));
     const result = await uploadSinglePdf(item, topic.subject_id);
@@ -395,7 +407,7 @@ export default function MaterialsPage() {
 
       {uploadWarning && (
         <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
-          ⚠️ A PDF szövege nem vagy alig kinyerhető (pl. szkennelt dokumentum). Lumi nem fogja tudni használni a tanuláshoz — érdemes szövegként bemásolni a tartalmat.
+          ⚠️ Egy PDF-ből kevés szöveget sikerült kinyerni. A tanulás elindítható, de ha Lumi válasza gyenge lesz, érdemes a tartalmat szövegként bemásolni a Szöveg fülön.
         </div>
       )}
 
@@ -527,7 +539,7 @@ export default function MaterialsPage() {
                         {formatFileSize(item.size)}
                         {item.status === "uploading" && " · Feltöltés..."}
                         {item.status === "done" && " · Feltöltve"}
-                        {item.warning && item.status === "done" && " · ⚠️ alig kinyerhető szöveg"}
+                        {item.warning && item.status === "done" && " · ⚠️ kevés kinyerhető szöveg"}
                       </p>
                       {item.status === "uploading" && (
                         <div className="h-1 overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800">
@@ -540,8 +552,7 @@ export default function MaterialsPage() {
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
                       {item.status === "error" &&
-                        item.error !== "Csak PDF fájl tölthető fel" &&
-                        item.error !== "A PDF túl nagy (maximum 25 MB)" && (
+                        isRetryablePdfError(item.error) && (
                           <button
                             type="button"
                             onClick={() => retryQueuedPdf(item.id)}
@@ -587,7 +598,7 @@ export default function MaterialsPage() {
               <button
                 type="button"
                 onClick={handlePdfUpload}
-                disabled={pdfUploading || !queue.some((q) => q.status === "pending" || (q.status === "error" && q.error !== "Csak PDF fájl tölthető fel" && q.error !== "A PDF túl nagy (maximum 25 MB)"))}
+                disabled={pdfUploading || !queue.some((q) => q.status === "pending" || (q.status === "error" && isRetryablePdfError(q.error)))}
                 className="cursor-pointer rounded-lg bg-accent px-5 py-2 text-sm font-medium text-white transition-all duration-200 hover:-translate-y-0.5 hover:bg-violet-600 hover:shadow-md active:scale-[0.98] disabled:opacity-50 disabled:hover:translate-y-0"
               >
                 {pdfUploading
@@ -636,9 +647,14 @@ export default function MaterialsPage() {
                       <div>
                         <h3 className="font-medium">
                           {material.title}{" "}
-                          {(!material.content || material.content.trim().length < 500) && (
+                          {(!material.content || material.content.trim().length === 0) && (
                             <span className="ml-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
                               ⚠️ Nem olvasható
+                            </span>
+                          )}
+                          {material.content && material.content.trim().length > 0 && material.content.trim().length < MIN_READABLE_CHARS && (
+                            <span className="ml-1 rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                              ⚠️ Kevés szöveg
                             </span>
                           )}
                         </h3>
@@ -649,7 +665,7 @@ export default function MaterialsPage() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      {material.file_type === "text" ? (
+                      {material.content && (
                         <button
                           onClick={() =>
                             setExpandedId(
@@ -660,7 +676,8 @@ export default function MaterialsPage() {
                         >
                           {expandedId === material.id ? "Elrejt" : "Megtekint"}
                         </button>
-                      ) : material.file_url ? (
+                      )}
+                      {material.file_type === "pdf" && material.file_url ? (
                         <a
                           href={material.file_url}
                           target="_blank"
@@ -687,6 +704,11 @@ export default function MaterialsPage() {
                     }`}
                   >
                     <div className="mt-1 rounded-b-xl border-x border-b border-zinc-200 bg-zinc-50 p-4 text-sm leading-relaxed whitespace-pre-wrap dark:border-zinc-800 dark:bg-zinc-900/50">
+                      {material.file_type === "pdf" && material.content && (
+                        <p className="mb-2 text-xs text-zinc-400">
+                          Kinyert szöveg ({material.content.trim().length} karakter) — ebből dolgozik Lumi.
+                        </p>
+                      )}
                       {material.content}
                     </div>
                   </div>

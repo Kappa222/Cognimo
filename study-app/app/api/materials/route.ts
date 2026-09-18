@@ -103,6 +103,18 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "A PDF túl hosszú (maximum 300 oldal)" }, { status: 413 });
     }
 
+    // Empty extraction (parser failure or image-only PDF) must not create a
+    // dead row: such rows are invisible to /api/analyze yet visible in the
+    // list, which previously surfaced as a confusing "Nincs tananyag" at
+    // learning time. Fail fast with guidance instead.
+    if (!extractedText.trim()) {
+      await supabase.storage.from("materials").remove([filePath]);
+      return NextResponse.json(
+        { error: "A PDF szövegét nem sikerült kinyerni (pl. szkennelt dokumentum vagy technikai hiba). Másold be a tartalmat szövegként a Szöveg fülön!" },
+        { status: 422 },
+      );
+    }
+
     const { data, error } = await supabase
       .from("study_materials")
       .insert({
@@ -112,7 +124,7 @@ export async function POST(req: Request) {
         title,
         file_url: urlData.publicUrl,
         file_type: "pdf",
-        content: extractedText || null,
+        content: extractedText,
       })
       .select()
       .single();
