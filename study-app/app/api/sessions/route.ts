@@ -8,17 +8,25 @@ export async function GET(req: Request) {
 
   const { searchParams } = new URL(req.url);
   const topicId = searchParams.get("topic_id");
+  // Optional status filter; defaults to in_progress (resume flow). The learn
+  // page passes status=any to also find completed sessions for island review.
+  const statusParam = searchParams.get("status");
+  const statusFilter =
+    statusParam === "any" || statusParam === null ? statusParam : "in_progress";
 
   if (!topicId) {
     return NextResponse.json({ error: "topic_id query parameter required" }, { status: 400 });
   }
 
-  const { data, error } = await supabase
+  let query = supabase
     .from("chat_sessions")
     .select("*")
     .eq("user_id", user.id)
-    .eq("topic_id", topicId)
-    .eq("status", "in_progress")
+    .eq("topic_id", topicId);
+  if (statusFilter !== "any") {
+    query = query.eq("status", statusFilter);
+  }
+  const { data, error } = await query
     .order("updated_at", { ascending: false })
     .limit(1)
     .single();

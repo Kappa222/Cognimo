@@ -23,7 +23,6 @@ export default function LearnPage() {
   const router = useRouter();
 
   const [topic, setTopic] = useState<Topic | null>(null);
-  const [subjectId, setSubjectId] = useState("");
   const [materialsCount, setMaterialsCount] = useState(0);
   const [pageLoading, setPageLoading] = useState(true);
   const [error, setError] = useState("");
@@ -33,7 +32,10 @@ export default function LearnPage() {
   const [storedMessages, setStoredMessages] = useState<ChatMessage[]>([]);
   const [streamingText, setStreamingText] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
-  const [isGeneratingIslands, setIsGeneratingIslands] = useState(false);
+  // Review mode: replaying a completed island (?island=N below the saved
+  // checkpoint). The full island flow runs, but nothing is persisted —
+  // no checkpoints, no messages, no mastery writes.
+  const [isReview, setIsReview] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [islands, setIslands] = useState<Island[]>([]);
   const [islandStep, setIslandStep] = useState<"teach" | "assess" | "remediation">("teach");
@@ -55,7 +57,6 @@ export default function LearnPage() {
   const storedMessagesRef = useRef(storedMessages);
   const hasUserRespondedRef = useRef(false);
   const contentEndRef = useRef<HTMLDivElement>(null);
-  const autoStartRef = useRef(false);
   const assessQuestionRef = useRef("");
   const evaluateResultRef = useRef<EvaluateResult | null>(null);
   const forceFarewellRef = useRef(false);
@@ -96,7 +97,6 @@ export default function LearnPage() {
     if (isStale()) return;
     if (topicErr || !t) { setError("Nem sikerült betölteni a témát."); setPageLoading(false); return; }
     setTopic(t);
-    setSubjectId(t.subject_id);
 
     const { count } = await supabase
       .from("study_materials")
@@ -105,11 +105,13 @@ export default function LearnPage() {
     if (isStale()) return;
     if (count !== null) setMaterialsCount(count);
 
+    let activeSession: ChatSession | null = null;
     const res = await fetch(`/api/sessions?topic_id=${topicId}`);
     if (isStale()) return;
     if (res.ok) {
       const existing: ChatSession | null = await res.json();
       if (existing && existing.status === "in_progress") {
+        activeSession = existing;
         const msgRes = await fetch(`/api/sessions/${existing.id}`);
         if (isStale()) return;
         if (msgRes.ok) {
@@ -149,7 +151,7 @@ export default function LearnPage() {
             setStoredMessages([]);
             setDisplayMessages([]);
           } else {
-            setSession(existing);
+            setSession(activeSession);
             setStoredMessages(messages);
             setIslands(loadedIslands);
 
@@ -205,6 +207,29 @@ export default function LearnPage() {
       }
     }
 
+    // No resumable session: a completed session's plan still enables island
+    // review (?island=N). Messages are not restored — review starts fresh.
+    if (!activeSession) {
+      try {
+        const anyRes = await fetch(`/api/sessions?topic_id=${topicId}&status=any`);
+        if (isStale()) return;
+        if (anyRes.ok) {
+          const latest: (ChatSession & { plan?: unknown }) | null = await anyRes.json();
+          if (
+            latest &&
+            Array.isArray(latest.plan) &&
+            (latest.plan as Island[]).length > 0
+          ) {
+            activeSession = latest;
+            setSession(latest);
+            setIslands(latest.plan as Island[]);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to load latest session:", err);
+      }
+    }
+
     if (isStale()) return;
     setPageLoading(false);
   }, [topicId, router]);
@@ -214,6 +239,8 @@ export default function LearnPage() {
 
   const saveMessage = useCallback(async (role: "user" | "assistant", content: string) => {
     if (!session) return false;
+    // Review replays persist nothing — conversation stays local to the visit.
+    if (isReview) return true;
     for (let attempt = 0; attempt < 2; attempt++) {
       if (attempt > 0) await new Promise((r) => setTimeout(r, 1000));
       try {
@@ -233,7 +260,7 @@ export default function LearnPage() {
     }
     setSaveError("Nem sikerült menteni az üzenetet. Újratöltéskor elveszhet.");
     return false;
-  }, [session]);
+  }, [session, isReview]);
 
   const saveCheckpoint = useCallback(async (
     checkpoint: number,
@@ -244,6 +271,8 @@ export default function LearnPage() {
       console.warn("saveCheckpoint dropped: no session");
       return false;
     }
+    // Review replays must never move the saved checkpoint or status.
+    if (isReview) return true;
     const body: Record<string, unknown> = { current_checkpoint: checkpoint };
     if (status) body.status = status;
     if (extra && "island_step" in extra) body.island_step = extra.island_step;
@@ -267,7 +296,7 @@ export default function LearnPage() {
     }
     setSaveError("Nem sikerült menteni az előrehaladást. Újratöltéskor elveszhet.");
     return false;
-  }, [session]);
+  }, [session, isReview]);
 
   const saveAssessState = useCallback(async () => {
     await saveCheckpoint(phase.currentCheckpoint, undefined, {
@@ -282,8 +311,38 @@ export default function LearnPage() {
     });
   }, [phase.currentCheckpoint, saveCheckpoint, islandStep, assessRound, provenConcepts, weakConcepts, remediationCount]);
 
+  // Clear local assess state when leaving an island, so a revisit or a
+  // back-navigation can't reuse stale questions and verdicts.
+  const clearIslandLocals = useCallback(() => {
+    assessQuestionRef.current = "";
+    evaluateResultRef.current = null;
+    forceFarewellRef.current = false;
+    hasUserRespondedRef.current = false;
+    setAssessRound(0);
+    setProvenConcepts([]);
+    setWeakConcepts([]);
+    setRemediationCount(0);
+    setIslandStep("teach");
+  }, []);
+
   const proceedToNextIsland = useCallback(async () => {
     const nextCheckpoint = phase.currentCheckpoint + 1;
+    if (isReview) {
+      // Review never touches saved progress: roam within completed
+      // territory, then return to the roadmap (never into uncompleted
+      // islands — those are entered normally from the roadmap).
+      const completedCount =
+        session?.status === "completed"
+          ? islands.length
+          : (session?.current_checkpoint ?? islands.length);
+      if (nextCheckpoint < islands.length && nextCheckpoint < completedCount) {
+        clearIslandLocals();
+        phase.goToNextStep();
+      } else {
+        router.push(`/topics/${topicId}`);
+      }
+      return;
+    }
     if (nextCheckpoint >= islands.length) {
       // Final island: single PUT marks completion, then show completion screen.
       await saveCheckpoint(islands.length, "completed", {
@@ -298,19 +357,10 @@ export default function LearnPage() {
         island_step: "teach",
         assess_state: null,
       });
-      // Clear local assess state so a back-navigation can't reuse it.
-      assessQuestionRef.current = "";
-      evaluateResultRef.current = null;
-      forceFarewellRef.current = false;
-      hasUserRespondedRef.current = false;
-      setAssessRound(0);
-      setProvenConcepts([]);
-      setWeakConcepts([]);
-      setRemediationCount(0);
-      setIslandStep("teach");
+      clearIslandLocals();
       router.push(`/topics/${topicId}`);
     }
-  }, [phase, islands.length, saveCheckpoint, router, topicId]);
+  }, [phase, islands.length, saveCheckpoint, router, topicId, isReview, session, clearIslandLocals]);
 
   const streamAIResponse = useCallback(async (
     history: { role: string; content: string }[],
@@ -523,24 +573,16 @@ export default function LearnPage() {
     };
   }, []);
 
-  // Auto-start when islands are loaded
-  useEffect(() => {
-    if (autoStartRef.current && phase.subPhase === "idle" && islands.length > 0) {
-      autoStartRef.current = false;
-      phase.start();
-    }
-  }, [islands, phase.subPhase, phase]);
-
-  // Assess state is reset explicitly in proceedToNextIsland,
-  // generateIslandsAndStart and handleRestart — no blanket effect here,
-  // so resuming a saved assess/remediation is never wiped.
+  // Assess state is reset explicitly in proceedToNextIsland, handleStart
+  // and handleRestart — no blanket effect here, so resuming a saved
+  // assess/remediation is never wiped.
 
   // Completion is saved once by proceedToNextIsland (single PUT with
   // status completed). This effect is a safety net for sessions that
-  // reach complete without it (e.g. legacy flows).
+  // reach complete without it (e.g. legacy flows). Never in review mode.
   const completionSavedRef = useRef(false);
   useEffect(() => {
-    if (phase.isComplete && session && islands.length > 0 && !completionSavedRef.current) {
+    if (phase.isComplete && session && islands.length > 0 && !isReview && !completionSavedRef.current) {
       completionSavedRef.current = true;
       saveCheckpoint(phase.currentCheckpoint, "completed", {
         island_step: "teach",
@@ -550,128 +592,64 @@ export default function LearnPage() {
     if (!phase.isComplete) {
       completionSavedRef.current = false;
     }
-  }, [phase.isComplete, phase.currentCheckpoint, session, saveCheckpoint, islands.length]);
+  }, [phase.isComplete, phase.currentCheckpoint, session, saveCheckpoint, islands.length, isReview]);
 
-  const generateIslandsAndStart = async () => {
-    if (!topic || !subjectId || !topicId) return;
-
-    setIsGeneratingIslands(true);
-
-    try {
-      const res = await fetch("/api/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topicId }),
-      });
-
-      if (!res.ok) {
-        // Surface the server's message (Hungarian, specific) instead of a
-        // generic failure so the next error diagnoses itself.
-        const serverMessage = (await res.text()).trim();
-        throw new Error(
-          serverMessage || `Island generation failed (${res.status})`,
-        );
-      }
-
-      const raw: unknown = await res.json();
-      // Validate AI output shape before it touches session state — malformed
-      // islands crash phase instructions (key_concepts.join etc.).
-      const islandsData: Island[] = (Array.isArray(raw) ? raw : [])
-        .filter(
-          (i): i is Island =>
-            !!i &&
-            typeof i === "object" &&
-            typeof (i as { title?: unknown }).title === "string" &&
-            ((i as { title: string }).title.trim().length > 0) &&
-            Array.isArray((i as { key_concepts?: unknown }).key_concepts) &&
-            ((i as { key_concepts: unknown[] }).key_concepts.length > 0) &&
-            Array.isArray((i as { probe_questions?: unknown }).probe_questions),
-        )
-        .map((i) => ({
-          title: (i as { title: string }).title,
-          approach: (["scenario", "socratic", "conversational"] as const).includes(
-            (i as { approach?: string }).approach as "scenario",
-          )
-            ? ((i as { approach: "scenario" | "socratic" | "conversational" }).approach)
-            : ("conversational" as const),
-          key_concepts: ((i as { key_concepts: unknown[] }).key_concepts as unknown[]).filter(
-            (c): c is string => typeof c === "string" && c.trim().length > 0,
-          ),
-          probe_questions: ((i as { probe_questions: unknown[] }).probe_questions as unknown[]).filter(
-            (q): q is string => typeof q === "string" && q.trim().length > 0,
-          ),
-          ...("chunk_indices" in (i as object) ? { chunk_indices: (i as Island).chunk_indices } : {}),
-          ...("chunk_refs" in (i as object) ? { chunk_refs: (i as Island).chunk_refs } : {}),
-        }))
-        .filter((i) => i.key_concepts.length > 0);
-      if (islandsData.length === 0) throw new Error("No islands generated");
-
-      const sessionRes = await fetch("/api/sessions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topic_id: topicId, subject_id: subjectId, plan: islandsData }),
-      });
-      if (!sessionRes.ok) throw new Error("Session creation failed");
-
-      const newSession: ChatSession = await sessionRes.json();
-      setSession(newSession);
-
-      setStoredMessages([]);
-      setDisplayMessages([]);
-      setIslandStep("teach");
-      setAssessRound(0);
-      setProvenConcepts([]);
-      setWeakConcepts([]);
-      setRemediationCount(0);
-      assessQuestionRef.current = "";
-      evaluateResultRef.current = null;
-      forceFarewellRef.current = false;
-      hasUserRespondedRef.current = false;
-      setSaveError("");
-      setChatError(null);
-      lastAnswerRef.current = "";
-
-      setIslands(islandsData);
-      autoStartRef.current = true;
-    } catch (err) {
-      console.error("Failed to start learning:", err);
-      const message = err instanceof Error ? err.message : "";
-      // Server messages are already user-facing Hungarian; anything else
-      // (network failure, 503) gets the generic retry prompt.
-      setError(
-        message && !message.startsWith("Island generation failed")
-          ? message
-          : "Nem sikerült elindítani a tanulást. Próbáld újra!",
-      );
-    } finally {
-      setIsGeneratingIslands(false);
-    }
-  };
+  // Island deep-link (?island=N, 1-based) from the roadmap. Returns the
+  // 0-based index, or null when absent/invalid.
+  const requestedIslandIndex = useCallback((): number | null => {
+    if (typeof window === "undefined") return null;
+    const raw = new URLSearchParams(window.location.search).get("island");
+    if (!raw) return null;
+    const n = Number.parseInt(raw, 10);
+    if (!Number.isInteger(n) || n < 1 || n > islands.length) return null;
+    return n - 1;
+  }, [islands.length]);
 
   const handleStart = async () => {
-    if (isGeneratingIslands) return;
-
-    if (islands.length === 0) {
-      // No usable plan (shouldn't happen after init cleanup) — generate fresh.
-      await generateIslandsAndStart();
+    if (!session || islands.length === 0) {
+      // No plan here — analysis lives on the dedicated analyze page now.
+      router.push(`/topics/${topicId}/analyze`);
       return;
     }
 
-    if (session && session.status === "in_progress" && session.current_checkpoint > 0) {
-      // Resume: keep the restored islandStep (teach/assess/remediation from
-      // initPage) — never force back to teach. Clamp stale checkpoints
-      // (e.g. saved against an older, longer plan) into the current plan
-      // instead of landing on the completion screen.
-      const safeCheckpoint = Math.min(session.current_checkpoint, islands.length - 1);
-      if (safeCheckpoint !== session.current_checkpoint) {
-        setSession({ ...session, current_checkpoint: safeCheckpoint });
-      }
+    const requested = requestedIslandIndex();
+
+    if (session.status === "completed") {
+      // Review only: every island is completed territory.
+      const idx = requested ?? 0;
+      setIsReview(true);
+      clearIslandLocals();
+      setStoredMessages([]);
+      setDisplayMessages([]);
+      setSaveError("");
+      setChatError(null);
+      lastAnswerRef.current = "";
+      phase.resumeFrom(idx);
+      return;
+    }
+
+    // Clamp stale checkpoints (e.g. saved against an older, longer plan)
+    // into the current plan instead of landing on the completion screen.
+    const safeCheckpoint = Math.min(session.current_checkpoint, islands.length - 1);
+    if (safeCheckpoint !== session.current_checkpoint) {
+      setSession({ ...session, current_checkpoint: safeCheckpoint });
+    }
+
+    const idx =
+      requested !== null && requested <= safeCheckpoint ? requested : safeCheckpoint;
+    if (idx === safeCheckpoint) {
+      // Current island: keep the restored islandStep (teach/assess/
+      // remediation from initPage) — never force back to teach.
+      setIsReview(false);
       phase.resumeFrom(safeCheckpoint);
-    } else if (session && session.status === "in_progress") {
-      setIslandStep("teach");
-      phase.start();
     } else {
-      await generateIslandsAndStart();
+      // Completed island replay: fresh assess state, nothing persisted.
+      setIsReview(true);
+      clearIslandLocals();
+      setSaveError("");
+      setChatError(null);
+      lastAnswerRef.current = "";
+      phase.resumeFrom(idx);
     }
   };
 
@@ -695,6 +673,7 @@ export default function LearnPage() {
           round: assessRound,
           isRemediation: islandStep === "remediation",
           provenConcepts,
+          isReview,
         }),
       });
 
@@ -831,11 +810,17 @@ export default function LearnPage() {
     evaluateResultRef.current = null;
     forceFarewellRef.current = false;
     hasUserRespondedRef.current = false;
-    autoStartRef.current = false;
     sendingRef.current = false;
+    setIsReview(false);
   };
 
   const handleBack = async () => {
+    // Review persists nothing — leave without confirm or save.
+    if (isReview) {
+      abortRef.current?.abort();
+      router.push(`/topics/${topicId}`);
+      return;
+    }
     if (session && phase.isStarted && !phase.isComplete) {
       const confirmed = window.confirm("Biztosan kilépsz a tanulásból? Az előrehaladásod elmentjük.");
       if (!confirmed) return;
@@ -906,6 +891,7 @@ export default function LearnPage() {
               <ProgressBar current={Math.min(phase.currentCheckpoint, phase.totalCheckpoints)} total={phase.totalCheckpoints} />
             </div>
             <span className="whitespace-nowrap rounded-full bg-zinc-100 px-3 py-1 text-xs font-medium text-zinc-500 dark:bg-zinc-800">
+              {isReview ? "🔁 Ismétlés — " : ""}
               {islandStep === "assess" || islandStep === "remediation"
                 ? `Tanítsd Lumit — ${phase.phaseBadge}`
                 : phase.phaseBadge}
@@ -930,21 +916,28 @@ export default function LearnPage() {
           )
         )}
 
-        {/* Island generation — loading */}
-        {isGeneratingIslands && (
-          <div className="mt-8 flex flex-col items-center gap-4">
-            <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-300 border-t-accent" />
-            <p className="text-sm text-zinc-500">Lumi elemzi a tananyagot...</p>
+        {/* Idle — pre-start (hidden once complete) */}
+        {phase.subPhase === "idle" && !phase.isComplete && islands.length > 0 && (
+          <div className="mt-8 rounded-2xl border border-dashed border-zinc-300 p-12 text-center dark:border-zinc-700">
+            <p className="mb-1 text-lg font-medium text-zinc-600 dark:text-zinc-400">📚 Készen állsz tanulni?</p>
+            <p className="mb-6 text-sm text-zinc-400">
+              {session?.status === "completed"
+                ? "Ez a téma már be van fejezve — válassz egy szigetet a roadmapon az ismétléshez, vagy indítsd innen az aktuálisat."
+                : "Lumi a szigetek sorrendjében vezet végig a tananyagon."}
+            </p>
+            <button onClick={() => handleStart()} className="cursor-pointer rounded-lg bg-accent px-8 py-3 text-base font-medium text-white transition-all duration-200 hover:-translate-y-0.5 hover:bg-violet-600 hover:shadow-md active:scale-[0.98]">
+              {session && session.status === "in_progress" ? "▶️ Folytatás" : "🚀 Kezdés"}
+            </button>
           </div>
         )}
 
-        {/* Idle — pre-start (hidden once complete) */}
-        {phase.subPhase === "idle" && !phase.isComplete && !isGeneratingIslands && (
+        {/* No plan yet — analysis lives on the dedicated analyze page */}
+        {phase.subPhase === "idle" && !phase.isComplete && islands.length === 0 && (
           <div className="mt-8 rounded-2xl border border-dashed border-zinc-300 p-12 text-center dark:border-zinc-700">
-            <p className="mb-1 text-lg font-medium text-zinc-600 dark:text-zinc-400">📚 Készen állsz tanulni?</p>
-            <p className="mb-6 text-sm text-zinc-400">Lumi először elemzi a tananyagot, majd egyéni tanulási tervet készít.</p>
-            <button onClick={handleStart} className="cursor-pointer rounded-lg bg-accent px-8 py-3 text-base font-medium text-white transition-all duration-200 hover:-translate-y-0.5 hover:bg-violet-600 hover:shadow-md active:scale-[0.98]">
-              {session && session.status === "in_progress" ? "▶️ Folytatás" : "🚀 Kezdés"}
+            <p className="mb-1 text-lg font-medium text-zinc-600 dark:text-zinc-400">📚 Még nincs tanulási terv</p>
+            <p className="mb-6 text-sm text-zinc-400">Lumi először elemzi a tananyagot, és szigetekre bontja.</p>
+            <button onClick={() => router.push(`/topics/${topicId}/analyze`)} className="cursor-pointer rounded-lg bg-accent px-8 py-3 text-base font-medium text-white transition-all duration-200 hover:-translate-y-0.5 hover:bg-violet-600 hover:shadow-md active:scale-[0.98]">
+              🔍 Elemzés indítása
             </button>
           </div>
         )}

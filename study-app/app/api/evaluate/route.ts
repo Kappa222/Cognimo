@@ -93,6 +93,7 @@ export async function POST(req: Request) {
     round,
     isRemediation,
     provenConcepts,
+    isReview,
   } = body as {
     sessionId: unknown;
     topicId: unknown;
@@ -103,6 +104,7 @@ export async function POST(req: Request) {
     round: unknown;
     isRemediation?: unknown;
     provenConcepts?: unknown;
+    isReview?: unknown;
   };
 
   if (
@@ -125,6 +127,10 @@ export async function POST(req: Request) {
       )
     : [];
   const safeRemediation = isRemediation === true;
+  // Review replays of completed islands must not touch stored progress: no
+  // duplicate-round conflicts, no mastery updates, no round rows — the AI
+  // verdicts still drive the conversation.
+  const reviewMode = isReview === true;
 
   // Ownership gate: the session must belong to the caller and to this topic.
   // Otherwise a user could attach assessment rows to anyone's session.
@@ -139,16 +145,19 @@ export async function POST(req: Request) {
   }
 
   // Duplicate guard: double-clicks/retries must not create two round rows.
-  const { data: existingRound } = await supabase
-    .from("assessment_rounds")
-    .select("id")
-    .eq("session_id", sessionId)
-    .eq("round", round)
-    .eq("is_remediation", safeRemediation)
-    .eq("user_id", user.id)
-    .maybeSingle();
-  if (existingRound) {
-    return new Response("Round already recorded", { status: 409 });
+  // Skipped in review mode (replays intentionally repeat recorded rounds).
+  if (!reviewMode) {
+    const { data: existingRound } = await supabase
+      .from("assessment_rounds")
+      .select("id")
+      .eq("session_id", sessionId)
+      .eq("round", round)
+      .eq("is_remediation", safeRemediation)
+      .eq("user_id", user.id)
+      .maybeSingle();
+    if (existingRound) {
+      return new Response("Round already recorded", { status: 409 });
+    }
   }
 
   const systemPromptBase = EVALUATE_SYSTEM_PROMPT
@@ -209,6 +218,13 @@ export async function POST(req: Request) {
   } catch (err) {
     console.error("Evaluate AI error:", err);
     return new Response("AI service unavailable", { status: 503 });
+  }
+
+  // Review replays record nothing — verdicts only steer the conversation.
+  if (reviewMode) {
+    return new Response(JSON.stringify(evaluateResult), {
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
   // Update concept_mastery for each verdict

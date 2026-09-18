@@ -92,55 +92,85 @@ export default function ProgressRoadmap({
           </button>
 
           <div className="flex items-center gap-1.5 overflow-x-auto px-1 py-1 sm:gap-3">
-            {visible.map((island) => (
-              <div key={island.index} className="relative flex flex-col items-center">
-                {(island.isCurrent || (isCompleted && island.index === totalCheckpoints - 1)) && (
-                  <div className="absolute -top-14 z-10">
-                    <div className="relative">
-                      <div className="absolute inset-0 animate-ping rounded-full bg-accent/30" style={{ animationDuration: "2s" }} />
-                      <Image
-                        src={avatarUrl}
-                        alt=""
-                        width={48}
-                        height={48}
-                        className="relative h-12 w-12 drop-shadow-md"
-                      />
-                    </div>
+            {visible.map((island) => {
+              const unlocked = island.isCompleted || island.isCurrent;
+              const islandTitle =
+                islandTitles && island.index < islandTitles.length
+                  ? islandTitles[island.index]
+                  : undefined;
+              const stateLabel = island.isCompleted
+                ? "befejezett"
+                : island.isCurrent
+                  ? "aktuális"
+                  : "zárolt";
+              const label = `${island.index + 1}. sziget${islandTitle ? `: ${islandTitle}` : ""} — ${stateLabel}`;
+              const node = (
+                <>
+                  <div
+                    className={`flex h-12 w-12 items-center justify-center rounded-full border-2 text-base font-bold transition-all sm:h-[68px] sm:w-[68px] sm:text-lg ${
+                      island.isCompleted
+                        ? "border-accent bg-accent text-white shadow-sm"
+                        : island.isCurrent
+                          ? "border-accent bg-white text-accent ring-2 ring-accent/30 shadow-md dark:bg-zinc-800"
+                          : "border-zinc-200 bg-zinc-50 text-zinc-300 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-600"
+                    }`}
+                  >
+                    {island.isCompleted ? (
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-7 w-7">
+                        <path fillRule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clipRule="evenodd" />
+                      </svg>
+                    ) : island.isLocked ? (
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-6 w-6">
+                        <path fillRule="evenodd" d="M10 1a4.5 4.5 0 00-4.5 4.5V9H5a2 2 0 00-2 2v6a2 2 0 00-2-2h-.5V5.5A4.5 4.5 0 0010 1zm3 8V5.5a3 3 0 10-6 0V9h6z" clipRule="evenodd" />
+                      </svg>
+                    ) : (
+                      <span>{island.index + 1}</span>
+                    )}
                   </div>
-                )}
 
-                <div
-                  className={`flex h-12 w-12 items-center justify-center rounded-full border-2 text-base font-bold transition-all sm:h-[68px] sm:w-[68px] sm:text-lg ${
-                    island.isCompleted
-                      ? "border-accent bg-accent text-white shadow-sm"
-                      : island.isCurrent
-                        ? "border-accent bg-white text-accent ring-2 ring-accent/30 shadow-md dark:bg-zinc-800"
-                        : "border-zinc-200 bg-zinc-50 text-zinc-300 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-600"
-                  }`}
-                >
-                  {island.isCompleted ? (
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-7 w-7">
-                      <path fillRule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clipRule="evenodd" />
-                    </svg>
-                  ) : island.isLocked ? (
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-6 w-6">
-                      <path fillRule="evenodd" d="M10 1a4.5 4.5 0 00-4.5 4.5V9H5a2 2 0 00-2 2v6a2 2 0 002 2h10a2 2 0 002-2v-6a2 2 0 00-2-2h-.5V5.5A4.5 4.5 0 0010 1zm3 8V5.5a3 3 0 10-6 0V9h6z" clipRule="evenodd" />
-                    </svg>
+                  {islandTitle ? (
+                    <span
+                      title={islandTitle}
+                      className="mt-1 max-w-12 truncate text-center text-[10px] font-medium text-zinc-500 sm:max-w-[68px] dark:text-zinc-400"
+                    >
+                      {islandTitle}
+                    </span>
+                  ) : null}
+                </>
+              );
+              return (
+                <div key={island.index} className="relative flex flex-col items-center">
+                  {(island.isCurrent || (isCompleted && island.index === totalCheckpoints - 1)) && (
+                    <div className="absolute -top-14 z-10">
+                      <div className="relative">
+                        <div className="absolute inset-0 animate-ping rounded-full bg-accent/30" style={{ animationDuration: "2s" }} />
+                        <Image
+                          src={avatarUrl}
+                          alt=""
+                          width={48}
+                          height={48}
+                          className="relative h-12 w-12 drop-shadow-md"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {unlocked ? (
+                    <Link
+                      href={`/topics/${topicId}/learn?island=${island.index + 1}`}
+                      aria-label={`${label} — megnyitás`}
+                      className="flex cursor-pointer flex-col items-center rounded-2xl transition-all duration-200 hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 active:scale-[0.98]"
+                    >
+                      {node}
+                    </Link>
                   ) : (
-                    <span>{island.index + 1}</span>
+                    <div aria-label={label} title="Előbb fejezd be az aktuális szigetet" className="flex flex-col items-center">
+                      {node}
+                    </div>
                   )}
                 </div>
-
-                {islandTitles && island.index < islandTitles.length ? (
-                  <span
-                    title={islandTitles[island.index]}
-                    className="mt-1 max-w-12 truncate text-center text-[10px] font-medium text-zinc-500 sm:max-w-[68px] dark:text-zinc-400"
-                  >
-                    {islandTitles[island.index]}
-                  </span>
-                ) : null}
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           <button

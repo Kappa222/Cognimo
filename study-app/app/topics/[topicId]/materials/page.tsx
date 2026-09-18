@@ -628,7 +628,7 @@ export default function MaterialsPage() {
                 Most már elkezdheted a tanulást ezzel az anyaggal.
               </p>
               <Link
-                href={`/topics/${topicId}/learn`}
+                href={`/topics/${topicId}/analyze`}
                 className="inline-block cursor-pointer rounded-lg bg-accent px-5 py-2 text-sm font-medium text-white transition-all duration-200 hover:-translate-y-0.5 hover:bg-violet-600 hover:shadow-md active:scale-[0.98]"
               >
                 📚 Indíts tanulást

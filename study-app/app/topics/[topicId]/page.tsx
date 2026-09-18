@@ -244,7 +244,7 @@ export default function TopicDetailPage() {
                     Lumi elemzi a tananyagot, és egyedi tanulási tervet készít.
                   </p>
                   <Link
-                    href={`/topics/${topicId}/learn`}
+                    href={`/topics/${topicId}/analyze`}
                     className="inline-block cursor-pointer rounded-lg bg-accent px-6 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:-translate-y-0.5 hover:bg-violet-600 hover:shadow-md active:scale-[0.98]"
                   >
                     📚 Indíts tanulást
