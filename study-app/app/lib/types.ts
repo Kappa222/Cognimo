@@ -4,6 +4,7 @@ export type SessionSubPhase =
   | "idle"
   | "waiting-response"
   | "ai-responding"
+  | "quiz"
   | "complete";
 
 export interface SessionStep {
@@ -84,4 +85,41 @@ export interface EvaluateResult {
   verdicts: EvaluateVerdict[];
   feedback_hint: string;
   next_focus: string | null;
+}
+
+// Client-side quiz taking (island quizzes + finale). Question payloads carry
+// no answers — grading happens server-side in the attempt endpoints.
+export interface QuizRunnerQuestion {
+  type: "mcq" | "typed";
+  text: string;
+  options: string[] | null;
+  concept: string;
+}
+
+export interface QuizSubmittedAnswer {
+  index: number;
+  mcqChoice: number | null;
+  typedText: string | null;
+}
+
+export interface QuizAttemptResult {
+  index: number;
+  type: "mcq" | "typed";
+  concept: string;
+  points: number;
+  maxPoints: number;
+  verdict: "correct" | "partial" | "wrong";
+  explanation: string | null;
+  correctIndex: number | null;
+  referenceAnswer: string | null;
+  userAnswer: string | null;
+}
+
+export interface QuizAttemptBreakdown {
+  quiz_pct: number;
+  teaching_pct: number;
+  blended: number;
+  correct_count: number;
+  total: number;
+  results: QuizAttemptResult[];
 }

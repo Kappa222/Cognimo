@@ -43,6 +43,18 @@ export default function TopicDetailPage() {
   const [pageLoading, setPageLoading] = useState(true);
   const [error, setError] = useState("");
   const [islandTitles, setIslandTitles] = useState<string[] | undefined>(undefined);
+  const [bestByTitle, setBestByTitle] = useState<Map<string, number>>(new Map());
+  const [finaleScore, setFinaleScore] = useState<number | null>(null);
+
+  // Roadmap badges: best blended score per island index, derived from the
+  // title-keyed attempts once the plan titles load (pure render derivation).
+  const bestScores: Record<number, number> = {};
+  if (islandTitles) {
+    islandTitles.forEach((title, i) => {
+      const score = bestByTitle.get(title);
+      if (score !== undefined) bestScores[i] = score;
+    });
+  }
 
   const loadData = useCallback(async (userId?: string) => {
     const { data: t, error: topicErr } = await supabase
@@ -102,6 +114,36 @@ export default function TopicDetailPage() {
           }
         }
       }
+    }
+
+    // Best blended island-quiz score per island, for roadmap badges.
+    // Titles resolve to indexes once islandTitles loads (effect below).
+    const { data: attempts } = await supabase
+      .from("island_quiz_attempts")
+      .select("island_title, blended")
+      .eq("topic_id", topicId)
+      .order("created_at", { ascending: false });
+    if (attempts) {
+      const bestByTitle = new Map<string, number>();
+      for (const a of attempts as { island_title: string; blended: number }[]) {
+        const prev = bestByTitle.get(a.island_title);
+        if (prev === undefined || a.blended > prev) bestByTitle.set(a.island_title, a.blended);
+      }
+      setBestByTitle(bestByTitle);
+    }
+
+    // Latest finale attempt (best blended) for the 🏁 strip.
+    const { data: finaleAttempts } = await supabase
+      .from("quiz_attempts")
+      .select("blended")
+      .eq("topic_id", topicId)
+      .order("created_at", { ascending: false })
+      .limit(10);
+    if (finaleAttempts && finaleAttempts.length > 0) {
+      const scores = (finaleAttempts as { blended: number | null }[])
+        .map((a) => a.blended)
+        .filter((b): b is number => typeof b === "number");
+      if (scores.length > 0) setFinaleScore(Math.max(...scores));
     }
 
     const { data: profile } = await supabase
@@ -185,6 +227,9 @@ export default function TopicDetailPage() {
             avatarUrl={avatarUrl}
             topicId={topicId}
             islandTitles={islandTitles}
+            bestScores={bestScores}
+            finaleUnlocked={isCompleted}
+            finaleScore={finaleScore}
           />
         </div>
       )}
@@ -263,9 +308,29 @@ export default function TopicDetailPage() {
                 </div>
               )}
 
-              {isCompleted && (
+              {isCompleted && finaleScore === null && (
                 <div className="rounded-2xl border border-zinc-200/60 bg-white p-6 shadow-sm dark:border-zinc-800/60 dark:bg-zinc-900">
-                  <p className="text-sm text-zinc-500">Minden részt teljesítettél! 🎉</p>
+                  <p className="mb-1 text-sm text-zinc-500">Minden részt teljesítettél! 🎉</p>
+                  <p className="mb-4 text-xs text-zinc-400">
+                    Már csak a záróvizsga van hátra: átfogó ismétlés + nagy kvíz az egész témából.
+                  </p>
+                  <Link
+                    href={`/topics/${topicId}/learn?finale=1`}
+                    className="inline-block cursor-pointer rounded-lg bg-accent px-6 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:-translate-y-0.5 hover:bg-violet-600 hover:shadow-md active:scale-[0.98]"
+                  >
+                    🏁 Záróvizsga indítása
+                  </Link>
+                </div>
+              )}
+
+              {isCompleted && finaleScore !== null && (
+                <div className="rounded-2xl border border-emerald-200/60 bg-emerald-50/50 p-6 shadow-sm dark:border-emerald-800 dark:bg-emerald-950/20">
+                  <p className="text-sm text-zinc-600 dark:text-zinc-300">
+                    Téma teljesítve! 🎉 Záróvizsga:{" "}
+                    <span className="font-bold text-emerald-600 dark:text-emerald-400">
+                      {finaleScore}%
+                    </span>
+                  </p>
                 </div>
               )}
             </>

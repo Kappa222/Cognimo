@@ -5,12 +5,23 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "../../../../lib/supabase";
 import { useSessionPhaseManager } from "../../../lib/useSessionPhaseManager";
-import type { Topic, ChatSession, ChatMessage, Island, EvaluateResult } from "../../../lib/types";
+import type {
+  Topic,
+  ChatSession,
+  ChatMessage,
+  Island,
+  EvaluateResult,
+  QuizAttemptBreakdown,
+  QuizRunnerQuestion,
+  QuizSubmittedAnswer,
+} from "../../../lib/types";
 import ProgressBar from "../../../components/ProgressBar";
 import AIBubble from "../../../components/AIBubble";
 import UserBubble from "../../../components/UserBubble";
 import ResponseInput from "../../../components/ResponseInput";
-import CompletionScreen from "../../../components/CompletionScreen";
+import QuizRunner from "../../../components/QuizRunner";
+import IslandScoreScreen from "../../../components/IslandScoreScreen";
+import FinaleRunner from "../../../components/FinaleRunner";
 import { LearnSkeleton } from "../../../components/LoadingSkeleton";
 
 interface DisplayMessage {
@@ -36,6 +47,12 @@ export default function LearnPage() {
   // checkpoint). The full island flow runs, but nothing is persisted —
   // no checkpoints, no messages, no mastery writes.
   const [isReview, setIsReview] = useState(false);
+  // Island quiz sub-state (entered after teach/assess, before checkpoint).
+  const [quizStage, setQuizStage] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [quizTitle, setQuizTitle] = useState("");
+  const [quizQuestions, setQuizQuestions] = useState<QuizRunnerQuestion[]>([]);
+  const [quizError, setQuizError] = useState("");
+  const [quizResult, setQuizResult] = useState<QuizAttemptBreakdown | null>(null);
   const [saveError, setSaveError] = useState("");
   const [islands, setIslands] = useState<Island[]>([]);
   const [islandStep, setIslandStep] = useState<"teach" | "assess" | "remediation">("teach");
@@ -59,7 +76,9 @@ export default function LearnPage() {
   const contentEndRef = useRef<HTMLDivElement>(null);
   const assessQuestionRef = useRef("");
   const evaluateResultRef = useRef<EvaluateResult | null>(null);
-  const forceFarewellRef = useRef(false);
+  // Per-visit teaching evidence for the blended island score: decisive
+  // assess verdicts (not_required excluded) since entering this island.
+  const visitTeachingRef = useRef({ correct: 0, partial: 0, total: 0 });
   // Mutual-exclusion guard: state updates lag rapid double-Enters, so a ref
   // (not state) is the only reliable double-submit barrier.
   const sendingRef = useRef(false);
@@ -311,18 +330,86 @@ export default function LearnPage() {
     });
   }, [phase.currentCheckpoint, saveCheckpoint, islandStep, assessRound, provenConcepts, weakConcepts, remediationCount]);
 
+  // Enter the island quiz after teach/assess: assess state is persisted
+  // first (quitting mid-quiz resumes at assess), then the persisted quiz
+  // set is loaded (generated once on first entry, identical afterwards).
+  const enterQuiz = useCallback(async () => {
+    const island = islands[phase.currentCheckpoint];
+    if (!island || !session) return;
+    await saveAssessState();
+    setQuizTitle(island.title);
+    setQuizQuestions([]);
+    setQuizResult(null);
+    setQuizError("");
+    setQuizStage("loading");
+    phase.setSubPhase("quiz");
+    try {
+      const res = await fetch("/api/islands/quiz", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ topicId, islandTitle: island.title }),
+      });
+      if (!res.ok) {
+        const serverMessage = (await res.text()).trim();
+        throw new Error(serverMessage || "Nem sikerült betölteni a kvízt. Próbáld újra!");
+      }
+      const body = await res.json();
+      const questions = (body.questions ?? []) as QuizRunnerQuestion[];
+      if (questions.length === 0) throw new Error("Üres kvíz érkezett. Próbáld újra!");
+      setQuizQuestions(questions);
+      setQuizStage("ready");
+    } catch (err) {
+      console.error("Island quiz load failed:", err);
+      const message = err instanceof Error && err.message ? err.message : "";
+      setQuizError(message || "Nem sikerült betölteni a kvízt. Próbáld újra!");
+      setQuizStage("error");
+    }
+  }, [islands, phase, session, saveAssessState, topicId]);
+
+  const submitQuiz = useCallback(
+    async (answers: QuizSubmittedAnswer[]): Promise<QuizAttemptBreakdown> => {
+      const island = islands[phase.currentCheckpoint];
+      if (!island || !session) throw new Error("Hiányzó sziget. Töltsd újra az oldalt!");
+      const visit = visitTeachingRef.current;
+      const teachingCorrect = Math.round(visit.correct + 0.5 * visit.partial);
+      const res = await fetch("/api/islands/quiz/attempt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          topicId,
+          islandTitle: island.title,
+          answers,
+          teachingCorrect,
+          teachingTotal: visit.total,
+        }),
+      });
+      if (!res.ok) {
+        const serverMessage = (await res.text()).trim();
+        throw new Error(serverMessage || "Nem sikerült beküldeni. Próbáld újra!");
+      }
+      const result = (await res.json()) as QuizAttemptBreakdown;
+      setQuizResult(result);
+      return result;
+    },
+    [islands, phase, session, topicId],
+  );
+
   // Clear local assess state when leaving an island, so a revisit or a
   // back-navigation can't reuse stale questions and verdicts.
   const clearIslandLocals = useCallback(() => {
     assessQuestionRef.current = "";
     evaluateResultRef.current = null;
-    forceFarewellRef.current = false;
     hasUserRespondedRef.current = false;
     setAssessRound(0);
     setProvenConcepts([]);
     setWeakConcepts([]);
     setRemediationCount(0);
     setIslandStep("teach");
+    visitTeachingRef.current = { correct: 0, partial: 0, total: 0 };
+    setQuizStage("idle");
+    setQuizQuestions([]);
+    setQuizResult(null);
+    setQuizError("");
   }, []);
 
   const proceedToNextIsland = useCallback(async () => {
@@ -344,12 +431,14 @@ export default function LearnPage() {
       return;
     }
     if (nextCheckpoint >= islands.length) {
-      // Final island: single PUT marks completion, then show completion screen.
-      await saveCheckpoint(islands.length, "completed", {
+      // Final island quiz done: islands complete, but the topic stays
+      // in_progress until the gated finale (🏁) is finished.
+      await saveCheckpoint(islands.length, undefined, {
         island_step: "teach",
         assess_state: null,
       });
-      phase.goToNextStep();
+      clearIslandLocals();
+      router.push(`/topics/${topicId}`);
     } else {
       // Save progress + clear stale assess state BEFORE leaving Learn,
       // so a reload on the roadmap never restores the old island's state.
@@ -413,15 +502,6 @@ export default function LearnPage() {
         setStreamingText("");
         setChatError(null);
 
-        // Farewell was just streamed — now advance. Checked first because
-        // islandStep is still assess/remediation while farewelling.
-        if (forceFarewellRef.current) {
-          forceFarewellRef.current = false;
-          await proceedToNextIsland();
-          setIsStreaming(false);
-          return;
-        }
-
         const stepPhase = phase.currentStep?.phase;
 
         if (stepPhase === "explain" && islandStep === "teach") {
@@ -439,9 +519,8 @@ export default function LearnPage() {
           evaluateResultRef.current = null;
 
           if (result && result.next_focus === null) {
-            // All concepts proven → success gate
-            await saveAssessState();
-            await proceedToNextIsland();
+            // All concepts proven → island quiz
+            await enterQuiz();
           } else if (result && assessRound >= MAX_ASSESS_ROUNDS) {
             // Max rounds reached → check gate
             const currentIsland = islands[phase.stepIndex];
@@ -450,8 +529,7 @@ export default function LearnPage() {
             ) ?? false;
 
             if (allProven) {
-              await saveAssessState();
-              await proceedToNextIsland();
+              await enterQuiz();
             } else if (remediationCount < MAX_REMEDIATION && islandStep === "assess") {
               // Enter remediation
               const newCount = remediationCount + 1;
@@ -463,11 +541,8 @@ export default function LearnPage() {
               // Trigger remediation micro-lesson immediately
               setTimeout(() => phase.setSubPhase("ai-responding"), 100);
             } else {
-              // Force proceed — send farewell first
-              forceFarewellRef.current = true;
-              hasUserRespondedRef.current = false;
-              await saveAssessState();
-              setTimeout(() => phase.setSubPhase("ai-responding"), 100);
+              // Assessment exhausted — the quiz measures what stuck.
+              await enterQuiz();
             }
           } else if (result && result.next_focus) {
             // Ask next question — clear follow-up flag so the next AI turn
@@ -511,7 +586,7 @@ export default function LearnPage() {
       }
     }
     setIsStreaming(false);
-  }, [session, phase, saveMessage, saveAssessState, proceedToNextIsland, islandStep, islands, assessRound, provenConcepts, remediationCount]);
+  }, [session, phase, saveMessage, saveAssessState, enterQuiz, islandStep, islands, assessRound, provenConcepts, remediationCount]);
 
   const triggerAIResponse = useCallback(async () => {
     const currentMessages = storedMessagesRef.current;
@@ -525,25 +600,17 @@ export default function LearnPage() {
     // sessions fast and far from model limits.
     const recentMessages = filteredMessages.slice(-30);
 
-    let instruction: string;
-    if (forceFarewellRef.current) {
-      const weakList = currentIsland?.key_concepts
-        .filter((k) => !provenConcepts.includes(k))
-        .join(", ") ?? "";
-      instruction = `Fázis: Befejezés. A felhasználó most fejezte be a(z) "${currentIsland?.title ?? ""}" rész tanulását. Adj rövid, bátorító összefoglalót (2-3 mondat), ami megnevezi, hogy mely fogalmakhoz érdemes később visszatérni: ${weakList}. Beszélj magyarul.`;
-    } else {
-      const feedbackHint = evaluateResultRef.current?.feedback_hint;
-      instruction = getPhaseInstruction(
-        stepPhase || "",
-        hasUserRespondedRef.current,
-        currentIsland,
-        islandStep,
-        assessRound,
-        assessQuestionRef.current,
-        provenConcepts,
-        feedbackHint,
-      );
-    }
+    const feedbackHint = evaluateResultRef.current?.feedback_hint;
+    const instruction = getPhaseInstruction(
+      stepPhase || "",
+      hasUserRespondedRef.current,
+      currentIsland,
+      islandStep,
+      assessRound,
+      assessQuestionRef.current,
+      provenConcepts,
+      feedbackHint,
+    );
 
     const apiMessages = recentMessages.length > 0
       ? recentMessages.map((m) => ({
@@ -708,9 +775,17 @@ export default function LearnPage() {
 
       const newProven = new Set(provenConcepts);
       const newWeak = new Set(weakConcepts);
+      const visit = visitTeachingRef.current;
       for (const v of result.verdicts) {
         const concept = v.concept?.trim();
         if (!concept) continue;
+        // Decisive verdicts feed the blended island score (not_required
+        // carries no evidence either way).
+        if (v.verdict !== "not_required") {
+          visit.total += 1;
+          if (v.verdict === "correct") visit.correct += 1;
+          else if (v.verdict === "partial") visit.partial += 1;
+        }
         if (v.verdict === "correct") {
           newProven.add(concept);
           newWeak.delete(concept);
@@ -775,44 +850,24 @@ export default function LearnPage() {
     }
   };
 
-  const handleRestart = async () => {
-    // Stop any in-flight AI stream so it can't write into the fresh state.
-    abortRef.current?.abort();
-    // Abandon the DB session so the next visit never resumes stale progress.
-    if (session) {
-      try {
-        await fetch(`/api/sessions/${session.id}/checkpoint`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ current_checkpoint: 0, status: "abandoned" }),
-        });
-      } catch (err) {
-        console.error("Failed to abandon session:", err);
-      }
-    }
-    phase.reset();
-    setSession(null);
-    setDisplayMessages([]);
-    setStoredMessages([]);
-    setStreamingText("");
-    setIsStreaming(false);
-    setIsEvaluating(false);
-    setSaveError("");
-    setChatError(null);
-    lastAnswerRef.current = "";
-    setIslands([]);
-    setIslandStep("teach");
-    setAssessRound(0);
-    setProvenConcepts([]);
-    setWeakConcepts([]);
-    setRemediationCount(0);
-    assessQuestionRef.current = "";
-    evaluateResultRef.current = null;
-    forceFarewellRef.current = false;
-    hasUserRespondedRef.current = false;
-    sendingRef.current = false;
-    setIsReview(false);
-  };
+  // Finale deep-link (?finale=1). Read lazily at mount (no effect needed);
+  // eligibility is checked below — ineligible visits bounce to the roadmap.
+  const [finaleRequested] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).get("finale") === "1",
+  );
+
+  const finaleEligible =
+    !!session &&
+    session.status === "in_progress" &&
+    islands.length > 0 &&
+    session.current_checkpoint >= islands.length;
+
+  useEffect(() => {
+    if (!finaleRequested || pageLoading || !topic) return;
+    if (!finaleEligible) router.push(`/topics/${topicId}`);
+  }, [finaleRequested, pageLoading, topic, finaleEligible, router, topicId]);
 
   const handleBack = async () => {
     // Review persists nothing — leave without confirm or save.
@@ -868,6 +923,18 @@ export default function LearnPage() {
           <Link href={`/topics/${topicId}/materials`} className="inline-block cursor-pointer rounded-lg bg-accent px-6 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:-translate-y-0.5 hover:bg-violet-600 hover:shadow-md active:scale-[0.98]">Tananyag hozzáadása</Link>
         </div>
       </div>
+    );
+  }
+
+  if (finaleRequested) {
+    if (!finaleEligible || !session) return <LearnSkeleton />;
+    return (
+      <FinaleRunner
+        sessionId={session.id}
+        topicId={topicId as string}
+        totalIslands={islands.length}
+        onExit={() => router.push(`/topics/${topicId}`)}
+      />
     );
   }
 
@@ -991,13 +1058,52 @@ export default function LearnPage() {
           </div>
         )}
 
-        {/* Completion — only with a real plan; empty islands can never complete */}
-        {phase.isComplete && islands.length > 0 && (
-          <CompletionScreen
-            topicName={topic.name}
-            topicId={topicId}
-            onRestart={handleRestart}
-            onBack={() => router.push(`/topics/${topicId}`)}
+        {/* Island quiz — entered after teach/assess, before checkpoint */}
+        {phase.subPhase === "quiz" && quizStage === "loading" && (
+          <div className="mt-8 flex flex-col items-center gap-4">
+            <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-300 border-t-accent" />
+            <p className="text-sm text-zinc-500">Lumi összeállítja a kvízt…</p>
+          </div>
+        )}
+
+        {phase.subPhase === "quiz" && quizStage === "error" && (
+          <div className="mt-8 rounded-2xl border border-dashed border-zinc-300 p-12 text-center dark:border-zinc-700">
+            <p className="mb-1 text-red-500">{quizError}</p>
+            <div className="mt-4 flex items-center justify-center gap-3">
+              <button
+                onClick={() => enterQuiz()}
+                className="cursor-pointer rounded-lg bg-accent px-5 py-2 text-sm font-medium text-white transition-all hover:bg-violet-700"
+              >
+                Újra
+              </button>
+              <button
+                onClick={handleBack}
+                className="cursor-pointer rounded-lg border border-zinc-200 px-5 py-2 text-sm text-zinc-600 transition-all hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+              >
+                Vissza
+              </button>
+            </div>
+          </div>
+        )}
+
+        {phase.subPhase === "quiz" && quizStage === "ready" && !quizResult && (
+          <QuizRunner
+            heading={`Kvíz — ${quizTitle}`}
+            subheading="4 feleletválasztós + 2 kifejtős kérdés ebből a részből."
+            questions={quizQuestions}
+            submitLabel="Beküldés"
+            onSubmit={submitQuiz}
+            onDone={() => {}}
+          />
+        )}
+
+        {phase.subPhase === "quiz" && quizResult && (
+          <IslandScoreScreen
+            title={`Sziget teljesítve — ${quizTitle}`}
+            subtitle={isReview ? "Ismétlés — az előrehaladásod változatlan." : undefined}
+            result={quizResult}
+            questions={quizQuestions}
+            onPrimary={() => proceedToNextIsland()}
           />
         )}
 

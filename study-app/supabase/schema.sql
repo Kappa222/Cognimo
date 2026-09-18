@@ -285,6 +285,10 @@ create table quiz_questions (
   question text not null,
   options jsonb not null,
   correct_answer text not null,
+  question_type text not null default 'mcq'
+    check (question_type in ('mcq', 'typed')),
+  reference_answer text,
+  concept text,
   created_at timestamptz not null default now()
 );
 
@@ -314,6 +318,9 @@ create table quiz_attempts (
   topic_id uuid references topics(id) on delete cascade,
   score integer not null,
   total_questions integer not null,
+  answers jsonb not null default '[]'::jsonb,
+  teaching_score integer,
+  blended integer,
   created_at timestamptz not null default now()
 );
 
@@ -356,5 +363,69 @@ create index idx_progress_log_user_id on progress_log(user_id);
 drop trigger if exists trg_progress_log_user_id on progress_log;
 create trigger trg_progress_log_user_id
   before insert on progress_log
+  for each row
+  execute function set_user_id();
+
+-- ============================================================
+-- 10. island_quizzes (deterministic island quizzes, generated once)
+-- ============================================================
+create table island_quizzes (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references profiles(id) on delete cascade,
+  topic_id uuid not null references topics(id) on delete cascade,
+  island_title text not null,
+  questions jsonb not null,
+  created_at timestamptz not null default now(),
+  unique (user_id, topic_id, island_title)
+);
+
+alter table island_quizzes enable row level security;
+
+create policy "Users can CRUD their own island quizzes"
+  on island_quizzes for all
+  using (auth.uid() = user_id);
+
+create index idx_island_quizzes_user_id on island_quizzes(user_id);
+create index idx_island_quizzes_topic_id on island_quizzes(topic_id);
+create index idx_island_quizzes_topic_island on island_quizzes(topic_id, island_title);
+
+drop trigger if exists trg_island_quizzes_user_id on island_quizzes;
+create trigger trg_island_quizzes_user_id
+  before insert on island_quizzes
+  for each row
+  execute function set_user_id();
+
+-- ============================================================
+-- 11. island_quiz_attempts
+-- ============================================================
+create table island_quiz_attempts (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references profiles(id) on delete cascade,
+  topic_id uuid not null references topics(id) on delete cascade,
+  island_title text not null,
+  correct_count int not null default 0,
+  total int not null default 0,
+  teaching_correct int not null default 0,
+  teaching_total int not null default 0,
+  quiz_pct int not null default 0,
+  teaching_pct int not null default 0,
+  blended int not null default 0,
+  answers jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+alter table island_quiz_attempts enable row level security;
+
+create policy "Users can CRUD their own island quiz attempts"
+  on island_quiz_attempts for all
+  using (auth.uid() = user_id);
+
+create index idx_island_quiz_attempts_user_id on island_quiz_attempts(user_id);
+create index idx_island_quiz_attempts_topic_id on island_quiz_attempts(topic_id);
+create index idx_island_quiz_attempts_topic_island on island_quiz_attempts(topic_id, island_title);
+
+drop trigger if exists trg_island_quiz_attempts_user_id on island_quiz_attempts;
+create trigger trg_island_quiz_attempts_user_id
+  before insert on island_quiz_attempts
   for each row
   execute function set_user_id();

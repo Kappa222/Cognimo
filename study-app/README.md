@@ -297,12 +297,17 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 | `/api/materials`              | ✅     | GET (list by topic) + POST (text JSON or PDF FormData)        |
 | `/api/materials/[id]`         | ✅     | DELETE material + storage file                                |
 | `/api/quiz/generate`          | ✅     | POST — generates MCQ quiz. Accepts `keyConcepts` + `questionCount` for scoped mini-quizzes |
+| `/api/quiz/grade`             | ✅     | POST — AI judge for typed answers (`question`, `referenceAnswer`, `userAnswer`) |
+| `/api/islands/quiz`           | ✅     | POST — get-or-create persisted island quiz (4 MCQ + 2 typed, identical on redo) |
+| `/api/islands/quiz/attempt`   | ✅     | POST — grades + blends (60% quiz / 40% teaching), stores attempt with breakdown |
+| `/api/topic/quiz`             | ✅     | POST — get-or-create persisted finale quiz (6 MCQ + 4 typed across all islands) |
+| `/api/topic/quiz/attempt`     | ✅     | POST — grades finale, stores attempt, returns breakdown |
 | `/api/topics`                 | ✅     | GET (list by subject) + POST (create) + PUT (edit) + DELETE   |
 
 ## Known Issues
 
 - Kvíz tab on topic detail page is a placeholder ("Hamarosan elérhető...")
-- Statisztika tab shows only basic counts (session count, material count)
+- Statisztika tab shows mastery, island scores, knowledge gaps, and finale score (session-time stats still basic)
 - No error boundaries — API failures show raw errors or silent fails
 - No loading skeletons — spinner-only loading states
 - No mobile responsiveness audit done yet
@@ -323,7 +328,7 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 10. Task 4a built — 7 Learn page components (AIBubble, UserBubble, ResponseInput, QuestionPrompt, QuizQuestion, CompletionScreen, ProgressBar) with mock 7-step session flow at `/topics/[topicId]/learn`. Leo/Mia characters replaced with Lumi across schema, UI, docs, landing page, settings, setup-profile. Lumi avatar refined as detailed otter SVG (full-body, transparent bg, no particles). Route links updated from `/chat` → `/learn`
 11. Tasks 4b-4e built — `useSessionPhaseManager` hook, session lifecycle API (`POST/GET /api/sessions`, `GET /api/sessions/[id]`, `PUT /api/sessions/[id]/checkpoint`, `POST /api/sessions/[id]/messages`), `/api/chat` enhanced with study materials + Lumi persona + GPT-4o fallback, learn page wired to real API, ProgressRoadmap reads real checkpoint, PDF text extraction on upload via `pdf-parse`. Migration `003_session_checkpoints.sql` added checkpoint columns + `topic_id` on quiz tables
 12. Exercise flow improvements — removed QuestionPrompt ("Van kérdésed?" interrupt), plan generation moved to background (no longer displayed to user), phase context injected on every AI call via `phaseInstruction`, fixed explain phase looping, session status set to "completed" on finish, save error handling, derived CompletionScreen stats, consistent materials upload UI (no layout shift)
-13. Island-based restructuring — replaced rigid 7-step template with dynamic island analysis (`/api/analyze`). Each island = interactive teaching (scenario/socratic/conversational) → Inverted Teacher probe → 6-question mini-quiz on key_concepts. `useSessionPhaseManager` now accepts dynamic islandTitles array. After each island's mini-quiz, checkpoint saved + user returns to roadmap. `/api/quiz/generate` supports scoped generation (`keyConcepts`, `questionCount`). `ProgressRoadmap` shows island titles below circles. Removed global quiz step from session structure.
+13. Island-based restructuring — replaced rigid 7-step template with dynamic island analysis (`/api/analyze`). Each island = interactive teaching (scenario/socratic/conversational) → Inverted Teacher probe → persisted quiz (since F26: 4 MCQ + 2 typed, see item 23) → blended score screen. `useSessionPhaseManager` now accepts dynamic islandTitles array. After each island's quiz, checkpoint saved + user returns to roadmap. `/api/quiz/generate` supports scoped generation (`keyConcepts`, `questionCount`). `ProgressRoadmap` shows island titles below circles. Removed global quiz step from session structure.
 14. **F6 — Gemini migration:** replaced Groq/OpenAI with `@google/generative-ai`, model `gemini-3.5-flash`, Hungarian prompts across all AI routes, `BLOCK_ONLY_HIGH` safety settings, try/catch around `generateContent()` + `JSON.parse`, fixed `completeJson` empty-contents bug, `generateContentStream` fix for `{ stream }` syntax
 15. **F7 — Account deletion:** `DELETE /api/account` endpoint (deletes Storage files → `auth.users`), `getAdminClient()` service-role helper in `lib/supabase-server.ts`, "Fiók törlése" button + ConfirmModal with `disabled` prop in `/settings`, `supabase/migrations/007_storage_cleanup.sql` (pg_net trigger for Storage cleanup on `study_materials` row deletion)
 16. **F9 — Cleanup & health:** removed deprecated `/api/plan` route + unused `LearningPlan` / `QuestionPrompt` components, removed default Next.js SVG leftovers from `public/`, fixed `lint` script (`eslint` → `eslint .`)
@@ -333,6 +338,7 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 20. **F13 — Scoped injection:** `chat` / `evaluate` / `quiz/generate` load only the island's chunks (keyword + capped full-text fallback); learn page sends `islandTitle` with chat calls
 21. **F14 — Storage key fix:** UUID-only storage keys (raw client filenames with spaces/accents caused Supabase "Invalid key" rejections); defensive key parsing on delete; storage/DB errors mapped to Hungarian messages
 22. **F15 — Multi-PDF upload queue:** PDF tab accepts multiple files (drag-drop + multi-select, max 10 per run, sequential `POST /api/materials`); auto-title from filename (editable inline, 80-char cap, `Névtelen PDF` fallback); client pre-validation (PDF-only, 25 MB, Hungarian errors); per-file pending/uploading/done/error states with indeterminate progress + aggregate K/N bar; per-file retry; success summary (`N sikeres, M sikertelen`); `SHORT_EXTRACTION` warning kept per file and globally; server route unchanged
+23. **F26 — Deterministic island quizzes + finale:** island flow is now teach → Inverted probe → persisted quiz (4 MCQ + 2 typed, generated once via `POST /api/islands/quiz`, identical on redo) → blended score screen (60% quiz / 40% teaching) → checkpoint. Typed answers graded by `POST /api/quiz/grade`. Gated 🏁 finale (`/learn?finale=1`): 3-round comprehensive inverted session (weakest-first focus from `concept_mastery`) + persisted 10-question big quiz (`POST /api/topic/quiz`). Roadmap shows best-score badges + finale strip; stats tab adds per-island scores and “Amit még gyakorolnod kell” gap list. Migrations `011_island_quizzes.sql`, `012_quiz_type_columns.sql` (+ `concept` on `quiz_questions`); shared generator/judge in `lib/quiz-gen.ts`; `QuizRunner` / `TypedQuestion` / `IslandScoreScreen` / `FinaleRunner` components; review mode replays quizzes without touching progress
 
 ## Getting Started
 
@@ -341,3 +347,57 @@ npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000) to see the result.
+
+---
+
+## Island Learning Redesign — Build Contract (F26+)
+
+Locked decisions: quiz generated lazily on first island entry · 4 MCQ + 2 typed per island · island score = 60% quiz + 40% teaching · finale strictly gated on all islands complete.
+
+### Honesty boundary on “same every time”
+
+Byte-identical on redo: quiz questions, probe questions (already in `plan`), scores, stats. Inherently generative: the live teaching dialogue — scoped to the same island concepts/chunks, but wording varies. Everything graded or displayed as a number is deterministic.
+
+### Target island flow
+
+```
+Tanítás (scoped, generative) → Inverted probe (+remediation) → Kvíz (4 MCQ + 2 typed, persisted)
+→ Island pontszám képernyő → checkpoint mentés → roadmap
+```
+
+Redo = same persisted questions, new attempt row, checkpoint untouched (extends existing review mode). Quitting mid-island restarts that island.
+
+Finale (gated): last island done → roadmap unlocks 🏁 node → `/learn?finale=1`: comprehensive inverted session (3 rounds, focus = weakest-first `shaky`/`missing` + sampled `solid` from `concept_mastery`) → persisted 10-question big quiz (6 MCQ + 4 typed, concepts sampled across all islands) → topic score screen → session `completed`.
+
+### Score formula
+
+- MCQ: 1 pt correct, 0 otherwise. Typed (AI judge): correct 1, partial 0.5, wrong 0.
+- `quiz_pct` = 100 · points / total. `teaching_pct` = 100 · correct share over decisive assess verdicts of that island visit (client-accumulated, `not_required` excluded).
+- **`blended = round(0.6 · quiz_pct + 0.4 · teaching_pct)`**. All three + per-answer detail stored per attempt; every attempt kept, best blended shown.
+
+### Schema contracts
+
+- **`island_quizzes`** (migration `011`): `id, user_id, topic_id, island_title, questions jsonb` (`[{type: mcq|typed, text, options[4]|null, correctIndex|null, referenceAnswer|null, concept}]`), `unique(user_id, topic_id, island_title)` = determinism guarantee. RLS + indexes + `set_user_id()` trigger.
+- **`island_quiz_attempts`** (migration `011`): `id, user_id, topic_id, island_title, correct_count, total, teaching_correct, teaching_total, quiz_pct, teaching_pct, blended, answers jsonb, created_at`. Same RLS/index/trigger pattern.
+- **Finale reuses `quiz_questions` / `quiz_attempts`** (already have `topic_id`): migration `012` adds `question_type (mcq|typed, default mcq)`, `reference_answer nullable` to questions; `answers jsonb, teaching_score, blended` to attempts.
+
+### API contracts
+
+- `POST /api/islands/quiz {topicId, islandTitle}` — get-or-create: stored questions or generate-once (scoped generator + typed support) → store → return. Identical on every later call.
+- `POST /api/quiz/grade {question, referenceAnswer, userAnswer}` — typed-answer judge → `{verdict: correct|partial|wrong, explanation}` (Hungarian).
+- `POST /api/islands/quiz/attempt` — server-grades MCQ by `correctIndex`, typed via grade endpoint, blends with client-sent teaching counts, inserts attempt, returns breakdown.
+- `POST /api/topic/quiz` + attempt — same pattern for the persisted finale quiz.
+
+### UI contracts
+
+- Learn page: per-island `quiz` step after assess/remediation; `TypedQuestion` (new) + reused `QuizQuestion`; `QuizProgress`; `IslandScoreScreen` (quiz %, teaching %, blended, per-question review, back to roadmap). Checkpoint save moves post-assess → post-quiz-score. `?finale=1` mode for the comprehensive session + big quiz.
+- `ProgressRoadmap`: best-blended score badge per island node; 🏁 finale node (locked until all done); click = learn/redo.
+- `StatisticsTab`: per-island best/latest cards, finale status/score, **“Amit még gyakorolnod kell”** — deterministic template bullets grouped by island from `shaky` concepts + wrong quiz answers (no AI cost).
+
+### Files
+
+New: `011_island_quizzes.sql`, `012_quiz_type_columns.sql`, `app/api/islands/quiz/route.ts`, `app/api/islands/quiz/attempt/route.ts`, `app/api/quiz/grade/route.ts`, `app/api/topic/quiz/route.ts`, `app/components/TypedQuestion.tsx`, `app/components/IslandScoreScreen.tsx`. Modified: `schema.sql`, quiz scoped generator (typed support), learn page + `useSessionPhaseManager`, `ProgressRoadmap`, `StatisticsTab`, topic page.
+
+### Verification
+
+`npm run build && npm run lint`, then: redo island → byte-identical questions; scores persist + stats update; quit mid-quiz → island restarts; finale locked until last island; completed-topic review unaffected.

@@ -11,6 +11,12 @@ interface ProgressRoadmapProps {
   avatarUrl: string;
   topicId: string;
   islandTitles?: string[];
+  /** Best blended island-quiz score per island index. */
+  bestScores?: Record<number, number>;
+  /** All islands done — the 🏁 finale node is playable. */
+  finaleUnlocked?: boolean;
+  /** Best finale blended score (null when not attempted). */
+  finaleScore?: number | null;
 }
 
 const VISIBLE_COUNT = 5;
@@ -22,6 +28,9 @@ export default function ProgressRoadmap({
   avatarUrl,
   topicId,
   islandTitles,
+  bestScores,
+  finaleUnlocked = false,
+  finaleScore = null,
 }: ProgressRoadmapProps) {
   const [offset, setOffset] = useState(0);
   const maxOffset = Math.max(0, totalCheckpoints - VISIBLE_COUNT);
@@ -136,6 +145,12 @@ export default function ProgressRoadmap({
                       {islandTitle}
                     </span>
                   ) : null}
+                  {island.isCompleted &&
+                  typeof bestScores?.[island.index] === "number" ? (
+                    <span className="mt-0.5 rounded-full bg-emerald-100 px-2 py-px text-[10px] font-bold text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300">
+                      {bestScores[island.index]}%
+                    </span>
+                  ) : null}
                 </>
               );
               return (
@@ -186,20 +201,46 @@ export default function ProgressRoadmap({
           </button>
         </div>
 
+        {/* Finale strip: gated on all islands done */}
         <div className="mt-6 flex justify-center">
-          <Link
-            href={`/topics/${topicId}/learn`}
-            className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-accent px-8 py-3 text-base font-semibold text-white shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:bg-violet-600 hover:shadow-md active:scale-[0.98]"
-          >
-            {currentCheckpoint === 0
-              ? "Kezdés"
-              : isCompleted
-                ? "Visszanézés"
-                : "Folytatás"}
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5">
-              <path fillRule="evenodd" d="M3 10a.75.75 0 01.75-.75h10.638L10.23 5.29a.75.75 0 111.04-1.08l5.5 5.25a.75.75 0 010 1.08l-5.5 5.25a.75.75 0 11-1.04-1.08l4.158-3.96H3.75A.75.75 0 013 10z" clipRule="evenodd" />
-            </svg>
-          </Link>
+          {finaleScore !== null ? (
+            <div
+              className="inline-flex items-center gap-2 rounded-xl border border-emerald-200/60 bg-emerald-50 px-6 py-3 dark:border-emerald-800 dark:bg-emerald-950/30"
+              aria-label={`Záróvizsga teljesítve: ${finaleScore} százalék`}
+            >
+              <span className="text-xl">🏁</span>
+              <span className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">
+                Záróvizsga: {finaleScore}%
+              </span>
+              <Link
+                href={`/topics/${topicId}/learn?finale=1`}
+                className="ml-1 text-xs font-medium text-emerald-600 underline underline-offset-2 hover:text-emerald-700 dark:text-emerald-400"
+              >
+                Újra
+              </Link>
+            </div>
+          ) : finaleUnlocked ? (
+            <Link
+              href={`/topics/${topicId}/learn?finale=1`}
+              className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-accent px-8 py-3 text-base font-semibold text-white shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:bg-violet-600 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 active:scale-[0.98]"
+            >
+              🏁 Záróvizsga indítása
+            </Link>
+          ) : (
+            <Link
+              href={
+                isCompleted
+                  ? `/topics/${topicId}/learn?island=${totalCheckpoints}`
+                  : `/topics/${topicId}/learn`
+              }
+              className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-accent px-8 py-3 text-base font-semibold text-white shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:bg-violet-600 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 active:scale-[0.98]"
+            >
+              {currentCheckpoint === 0 ? "Kezdés" : "Folytatás"}
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5">
+                <path fillRule="evenodd" d="M3 10a.75.75 0 01.75-.75h10.638L10.23 5.29a.75.75 0 111.04-1.08l5.5 5.25a.75.75 0 010 1.08l-5.5 5.25a.75.75 0 11-1.04-1.08l4.158-3.96H3.75A.75.75 0 013 10z" clipRule="evenodd" />
+              </svg>
+            </Link>
+          )}
         </div>
       </div>
     </div>
