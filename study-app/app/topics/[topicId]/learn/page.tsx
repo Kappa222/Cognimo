@@ -60,6 +60,11 @@ export default function LearnPage() {
   const [provenConcepts, setProvenConcepts] = useState<string[]>([]);
   const [weakConcepts, setWeakConcepts] = useState<string[]>([]);
   const [remediationCount, setRemediationCount] = useState(0);
+  // Teach-first: counts completed teach exchanges in this island visit.
+  // Drives the gentle nudge after many turns; the button is the handover.
+  const [teachRound, setTeachRound] = useState(0);
+  // Bite-size: index into currentIsland.key_concepts — one concept per message.
+  const [teachConceptIndex, setTeachConceptIndex] = useState(0);
   const [isEvaluating, setIsEvaluating] = useState(false);
   // Inline (non-fatal) chat errors: transient AI/evaluate failures show a
   // retry panel instead of hijacking the whole page like `error` does.
@@ -76,8 +81,13 @@ export default function LearnPage() {
   const contentEndRef = useRef<HTMLDivElement>(null);
   const assessQuestionRef = useRef("");
   const evaluateResultRef = useRef<EvaluateResult | null>(null);
-  // Per-visit teaching evidence for the blended island score: decisive
-  // assess verdicts (not_required excluded) since entering this island.
+  // Bite-size intent for the next teach turn: example/simpler re-explain of
+  // the same concept. Cleared after the stream (like evaluateResultRef).
+  const teachIntentRef = useRef<"example" | "simpler" | null>(null);
+  // In-flight stream guard: state updates lag re-renders, so a ref (not
+  // state) is the only reliable barrier against a second parallel stream
+  // when the ai-responding effect refires with a fresh callback identity.
+  const streamingRef = useRef(false);
   const visitTeachingRef = useRef({ correct: 0, partial: 0, total: 0 });
   // Mutual-exclusion guard: state updates lag rapid double-Enters, so a ref
   // (not state) is the only reliable double-submit barrier.
@@ -89,6 +99,7 @@ export default function LearnPage() {
 
   const MAX_ASSESS_ROUNDS = 4;
   const MAX_REMEDIATION = 2;
+  const MAX_TEACH_TURNS = 6;
 
   useEffect(() => {
     contentEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -171,18 +182,34 @@ export default function LearnPage() {
             setDisplayMessages([]);
           } else {
             setSession(activeSession);
-            setStoredMessages(messages);
+            // Read-time cleanup of the duplicate-turn bug (retry loop ran
+            // every stream twice): collapse consecutive same-role identical
+            // messages. DB rows are left untouched — this only affects what
+            // is displayed and sent as AI context from now on.
+            const dedupedMessages = (messages as ChatMessage[]).filter(
+              (m: ChatMessage, i: number, arr: ChatMessage[]) =>
+                i === 0 || m.role !== arr[i - 1].role || m.content !== arr[i - 1].content,
+            );
+            setStoredMessages(dedupedMessages);
             setIslands(loadedIslands);
 
-          // Restore assess state from session
-          const sData = sessionData as { island_step?: string; assess_state?: { round: number; proven: string[]; weak: string[]; remediationCount: number; nextFocus: string } } | undefined;
-          if (sData?.island_step && (sData.island_step === "assess" || sData.island_step === "remediation")) {
+          // Restore assess/teach state from session
+          const sData = sessionData as { island_step?: string; assess_state?: { round: number; proven: string[]; weak: string[]; remediationCount: number; nextFocus: string; teachRound?: number; teachConceptIndex?: number } } | undefined;
+          if (sData?.island_step === "teach" && sData.assess_state) {
+            const island = loadedIslands[existing.current_checkpoint];
+            const maxIdx = Math.max(0, (island?.key_concepts.length ?? 1) - 1);
+            setIslandStep("teach");
+            setTeachRound(sData.assess_state.teachRound ?? 0);
+            setTeachConceptIndex(Math.min(Math.max(0, sData.assess_state.teachConceptIndex ?? 0), maxIdx));
+          } else if (sData?.island_step && (sData.island_step === "assess" || sData.island_step === "remediation")) {
             setIslandStep(sData.island_step);
             if (sData.assess_state) {
               setAssessRound(sData.assess_state.round);
               setProvenConcepts(sData.assess_state.proven ?? []);
               setWeakConcepts(sData.assess_state.weak ?? []);
               setRemediationCount(sData.assess_state.remediationCount ?? 0);
+              setTeachRound(sData.assess_state.teachRound ?? 0);
+              setTeachConceptIndex(sData.assess_state.teachConceptIndex ?? 0);
               assessQuestionRef.current = sData.assess_state.nextFocus ?? "";
             } else {
               // assess_state lost (e.g. save failed) but mastery survived:
@@ -214,7 +241,7 @@ export default function LearnPage() {
 
           if (isStale()) return;
           setDisplayMessages(
-            messages
+            dedupedMessages
               .filter((m: ChatMessage) => !m.content.startsWith("__ISLANDS__:"))
               .map((m: ChatMessage) => ({
                 role: m.role === "assistant" ? "ai" : "user",
@@ -326,9 +353,70 @@ export default function LearnPage() {
         weak: weakConcepts,
         remediationCount,
         nextFocus: assessQuestionRef.current,
+        teachRound,
+        teachConceptIndex,
       },
     });
-  }, [phase.currentCheckpoint, saveCheckpoint, islandStep, assessRound, provenConcepts, weakConcepts, remediationCount]);
+  }, [phase.currentCheckpoint, saveCheckpoint, islandStep, assessRound, provenConcepts, weakConcepts, remediationCount, teachRound, teachConceptIndex]);
+
+  // Explicit teach -> assess handover via the "Értem" button. Starts the
+  // inverted-teacher probe with a gentle recap question (no prior grading).
+  const handleTeachReady = useCallback(async () => {
+    const island = islands[phase.currentCheckpoint];
+    if (!session || !island || isStreaming || streamingRef.current || isEvaluating || sendingRef.current) return;
+    sendingRef.current = true;
+    try {
+      setChatError(null);
+      teachIntentRef.current = null;
+      assessQuestionRef.current = island.key_concepts[0] ?? "";
+      hasUserRespondedRef.current = false;
+      setAssessRound(1);
+      setProvenConcepts([]);
+      setWeakConcepts([]);
+      setRemediationCount(0);
+      setIslandStep("assess");
+      phase.setSubPhase("ai-responding");
+    } finally {
+      sendingRef.current = false;
+    }
+  }, [islands, phase, session, isStreaming, isEvaluating]);
+
+  // Bite-size: advance to the next concept silently (no user bubble saved).
+  const handleTeachNext = useCallback(() => {
+    const island = islands[phase.currentCheckpoint];
+    if (!session || !island || isStreaming || streamingRef.current || isEvaluating || sendingRef.current) return;
+    if (phase.subPhase !== "waiting-response" || islandStep !== "teach") return;
+    sendingRef.current = true;
+    try {
+      setChatError(null);
+      teachIntentRef.current = null;
+      hasUserRespondedRef.current = false;
+      setTeachConceptIndex((i) => Math.min(i + 1, Math.max(0, island.key_concepts.length - 1)));
+      phase.setSubPhase("ai-responding");
+    } finally {
+      sendingRef.current = false;
+    }
+  }, [islands, phase, session, isStreaming, isEvaluating, islandStep]);
+
+  // Bite-size: re-explain the same concept (example / simpler). Saves a small
+  // user bubble with the tap label so history stays readable.
+  const handleTeachIntent = useCallback(async (kind: "example" | "simpler") => {
+    if (!session || isStreaming || streamingRef.current || isEvaluating || sendingRef.current) return;
+    if (phase.subPhase !== "waiting-response" || islandStep !== "teach") return;
+    sendingRef.current = true;
+    try {
+      setChatError(null);
+      const label = kind === "example" ? "🧪 Példát kérek" : "🪶 Egyszerűbben";
+      teachIntentRef.current = kind;
+      hasUserRespondedRef.current = true;
+      setDisplayMessages((prev) => [...prev, { role: "user", text: label }]);
+      await saveMessage("user", label);
+      setStoredMessages((prev) => [...prev, { role: "user", content: label, id: "", session_id: session.id, created_at: new Date().toISOString() }]);
+      phase.setSubPhase("ai-responding");
+    } finally {
+      sendingRef.current = false;
+    }
+  }, [session, isStreaming, isEvaluating, phase, islandStep, saveMessage]);
 
   // Enter the island quiz after teach/assess: assess state is persisted
   // first (quitting mid-quiz resumes at assess), then the persisted quiz
@@ -394,16 +482,19 @@ export default function LearnPage() {
     [islands, phase, session, topicId],
   );
 
-  // Clear local assess state when leaving an island, so a revisit or a
+  // Clear local assess/teach state when leaving an island, so a revisit or a
   // back-navigation can't reuse stale questions and verdicts.
   const clearIslandLocals = useCallback(() => {
     assessQuestionRef.current = "";
     evaluateResultRef.current = null;
+    teachIntentRef.current = null;
     hasUserRespondedRef.current = false;
     setAssessRound(0);
     setProvenConcepts([]);
     setWeakConcepts([]);
     setRemediationCount(0);
+    setTeachRound(0);
+    setTeachConceptIndex(0);
     setIslandStep("teach");
     visitTeachingRef.current = { correct: 0, partial: 0, total: 0 };
     setQuizStage("idle");
@@ -456,7 +547,8 @@ export default function LearnPage() {
     phaseInstruction?: string,
     islandTitle?: string,
   ) => {
-    if (!session) return;
+    if (!session || streamingRef.current) return;
+    streamingRef.current = true;
     setIsStreaming(true);
     setStreamingText("");
 
@@ -505,13 +597,11 @@ export default function LearnPage() {
         const stepPhase = phase.currentStep?.phase;
 
         if (stepPhase === "explain" && islandStep === "teach") {
-          // End of teach → enter assess
-          const currentIsland = islands[phase.stepIndex];
-          const firstFocus = currentIsland?.key_concepts[0] ?? "";
-          assessQuestionRef.current = firstFocus;
+          // Bite-size: stay in teach after every bite. Taps or free text
+          // drive the next bite; the handover button enters assess.
+          teachIntentRef.current = null;
+          setTeachRound((r) => r + 1);
           hasUserRespondedRef.current = false;
-          setAssessRound(1);
-          setIslandStep("assess");
           phase.setSubPhase("waiting-response");
         } else if (islandStep === "assess" || islandStep === "remediation") {
           // After Lumi's reaction stream
@@ -565,12 +655,18 @@ export default function LearnPage() {
             phase.setSubPhase("waiting-response");
           }
         }
+        // Success: exit the retry loop so the turn is generated, saved and
+        // rendered exactly once (previously the loop ran a second stream).
+        streamingRef.current = false;
+        setIsStreaming(false);
+        return;
       } else {
         // Empty response counts as a failed attempt — throw to retry.
         throw new Error("Empty response from AI");
       }
       } catch (err) {
         if ((err as Error).name === "AbortError") {
+          streamingRef.current = false;
           setIsStreaming(false);
           return;
         }
@@ -585,6 +681,7 @@ export default function LearnPage() {
         }
       }
     }
+    streamingRef.current = false;
     setIsStreaming(false);
   }, [session, phase, saveMessage, saveAssessState, enterQuiz, islandStep, islands, assessRound, provenConcepts, remediationCount]);
 
@@ -601,6 +698,7 @@ export default function LearnPage() {
     const recentMessages = filteredMessages.slice(-30);
 
     const feedbackHint = evaluateResultRef.current?.feedback_hint;
+    const teachIntent = teachIntentRef.current;
     const instruction = getPhaseInstruction(
       stepPhase || "",
       hasUserRespondedRef.current,
@@ -610,6 +708,8 @@ export default function LearnPage() {
       assessQuestionRef.current,
       provenConcepts,
       feedbackHint,
+      teachConceptIndex,
+      teachIntent,
     );
 
     const apiMessages = recentMessages.length > 0
@@ -622,11 +722,11 @@ export default function LearnPage() {
           content: `A felhasználó ezt a témát szeretné megtanulni: "${topic?.name ?? "ismeretlen téma"}". Kezdd el a tanulást a tananyag és a fázis-instrukció alapján, magyarul.`,
         }];
     await streamAIResponse(apiMessages, instruction, currentIsland?.title);
-  }, [streamAIResponse, topic, phase, islands, islandStep, assessRound, provenConcepts]);
+  }, [streamAIResponse, topic, phase, islands, islandStep, assessRound, provenConcepts, teachConceptIndex]);
 
   useEffect(() => {
     if (phase.subPhase !== "ai-responding") return;
-    if (isStreaming) return;
+    if (isStreaming || streamingRef.current) return;
     if (chatError) return;
     if (phase.currentStep?.phase === "complete") return;
 
@@ -831,6 +931,7 @@ export default function LearnPage() {
         lastAnswerRef.current = trimmed;
         await handleAssessResponse(trimmed);
       } else {
+        teachIntentRef.current = null;
         hasUserRespondedRef.current = true;
         phase.setSubPhase("ai-responding");
       }
@@ -884,6 +985,19 @@ export default function LearnPage() {
       try {
         if (islandStep === "assess" || islandStep === "remediation") {
           await saveAssessState();
+        } else if (islandStep === "teach" && (teachRound > 0 || teachConceptIndex > 0)) {
+          await saveCheckpoint(phase.currentCheckpoint, undefined, {
+            island_step: "teach",
+            assess_state: {
+              round: 0,
+              proven: [],
+              weak: [],
+              remediationCount: 0,
+              nextFocus: "",
+              teachRound,
+              teachConceptIndex,
+            },
+          });
         } else {
           await saveCheckpoint(phase.currentCheckpoint);
         }
@@ -961,7 +1075,9 @@ export default function LearnPage() {
               {isReview ? "🔁 Ismétlés — " : ""}
               {islandStep === "assess" || islandStep === "remediation"
                 ? `Tanítsd Lumit — ${phase.phaseBadge}`
-                : phase.phaseBadge}
+                : islandStep === "teach" && phase.isStarted
+                  ? `Lumi magyaráz — ${phase.phaseBadge}`
+                  : phase.phaseBadge}
             </span>
           </div>
         )}
@@ -1045,8 +1161,55 @@ export default function LearnPage() {
           </div>
         )}
 
-        {/* Text input for user — hidden during evaluate */}
-        {phase.subPhase === "waiting-response" && !isStreaming && !isEvaluating && (
+        {/* Teach bites: one concept per message + quick taps, or handover on last */}
+        {phase.subPhase === "waiting-response" && islandStep === "teach" && !isStreaming && !isEvaluating && (() => {
+          const island = islands[phase.currentCheckpoint];
+          const total = island?.key_concepts.length ?? 0;
+          const isLast = total <= 0 || teachConceptIndex >= total - 1;
+          return (
+            <div className="flex flex-col gap-2">
+              {total > 0 && (
+                <p className="text-xs text-zinc-400">{Math.min(teachConceptIndex + 1, total)}/{total} fogalom</p>
+              )}
+              {isLast ? (
+                <button
+                  onClick={() => handleTeachReady()}
+                  className="cursor-pointer rounded-xl bg-accent px-5 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:-translate-y-0.5 hover:bg-violet-600 hover:shadow-md active:scale-[0.98]"
+                >
+                  Értem, jöhet a kikérdezés →
+                </button>
+              ) : (
+                <button
+                  onClick={() => handleTeachNext()}
+                  className="cursor-pointer rounded-xl bg-accent px-5 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:-translate-y-0.5 hover:bg-violet-600 hover:shadow-md active:scale-[0.98]"
+                >
+                  Értem, tovább →
+                </button>
+              )}
+              <div className="flex gap-2">
+                <button
+                  onClick={() => handleTeachIntent("example")}
+                  className="flex-1 cursor-pointer rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm text-zinc-600 transition-all duration-200 hover:-translate-y-0.5 hover:bg-zinc-50 active:scale-[0.98] dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                >
+                  🧪 Példát kérek
+                </button>
+                <button
+                  onClick={() => handleTeachIntent("simpler")}
+                  className="flex-1 cursor-pointer rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm text-zinc-600 transition-all duration-200 hover:-translate-y-0.5 hover:bg-zinc-50 active:scale-[0.98] dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                >
+                  🪶 Egyszerűbben
+                </button>
+              </div>
+              {teachRound >= MAX_TEACH_TURNS && (
+                <p className="text-xs text-zinc-400">Ha elakadtál, kérdezz bátran — egyébként nyomd meg a fenti gombot a folytatáshoz.</p>
+              )}
+              <ResponseInput onSend={handleUserResponse} disabled={false} placeholder="Kérdezz bátran, ha valami nem világos..." />
+            </div>
+          );
+        })()}
+
+        {/* Text input for assess/remediation — hidden during evaluate */}
+        {phase.subPhase === "waiting-response" && islandStep !== "teach" && !isStreaming && !isEvaluating && (
           <ResponseInput onSend={handleUserResponse} disabled={false} />
         )}
 
@@ -1123,25 +1286,33 @@ function getPhaseInstruction(
   assessQuestionRef?: string,
   provenConcepts?: string[],
   feedbackHint?: string,
+  teachConceptIndex?: number,
+  teachIntent?: "example" | "simpler" | null,
 ): string {
   if (currentIsland) {
-    if (islandStep === "teach") {
-      const approachGuides: Record<string, { guide: string; closing: string }> = {
-        scenario: {
-          guide: "Mutass be egy valós életből vett szituációt vagy problémát, és vezesd végig a felhasználót a megértésén.",
-          closing: "A szituáció végén EGYETLEN nyitott kérdéssel add át a szót a felhasználónak.",
-        },
-        socratic: {
-          guide: "Tegyél fel irányított kérdéseket, amelyek segítenek a felhasználónak magától felfedezni a választ. Ne mondd ki a választ előre.",
-          closing: "Egyszerre csak EGY kérdést tegyél fel, és várd meg a felhasználó válaszát.",
-        },
-        conversational: {
-          guide: "Magyarázd el természetes, beszélgetős stílusban a témát.",
-          closing: "A magyarázat végén rövid, egyetlen kérdéssel ellenőrizd, hogy követhető volt-e.",
-        },
+    const concepts = currentIsland.key_concepts;
+    const focusConcept = concepts[Math.min(Math.max(0, teachConceptIndex ?? 0), Math.max(0, concepts.length - 1))] ?? "";
+    if (islandStep === "teach" && teachIntent === "example" && focusConcept) {
+      return `Fázis: Tanítás, plusz példa — csak 1 újabb rövid példa ugyanarra a fogalomra ("${focusConcept}", a(z) "${currentIsland.title}" részből), 2-3 mondatban. Más fogalmat, listát, bevezetőt, köszönést tilos. Vágás tilos: mindig fejezd be az utolsó mondatot. Beszélj magyarul.`;
+    }
+
+    if (islandStep === "teach" && teachIntent === "simpler" && focusConcept) {
+      return `Fázis: Tanítás, egyszerűbben — ugyanaz a fogalom ("${focusConcept}", a(z) "${currentIsland.title}" részből) még egyszerűbben, 3-4 mondatban, 1 hétköznapi példával. Más fogalmat, listát, bevezetőt, köszönést tilos. Vágás tilos: mindig fejezd be az utolsó mondatot. Beszélj magyarul.`;
+    }
+
+    if (islandStep === "teach" && !isFollowUp) {
+      const approachOpeners: Record<string, string> = {
+        scenario: "Nyiss egy valós életből vett szituációval, majd azon keresztül magyarázd ezt az EGY fogalmat.",
+        socratic: "Először magyarázd el egyszerűen ezt az EGY fogalmat, majd a már elmagyarázottakra építő EGY irányított kérdéssel mélyítsd — soha ne kérdezz olyat, amit még nem magyaráztál el.",
+        conversational: "Magyarázd el természetes, beszélgetős stílusban ezt az EGY fogalmat.",
       };
-      const a = approachGuides[currentIsland.approach] ?? approachGuides.conversational;
-      return `Fázis: Tanulás — ${a.guide} Csak a(z) "${currentIsland.title}" részhez tartozó kulcsfogalmakat fedd le: ${currentIsland.key_concepts.join(", ")}. NE említs más szigeteket vagy későbbi témákat. ${a.closing} Beszélj magyarul.`;
+      const opener = approachOpeners[currentIsland.approach] ?? approachOpeners.conversational;
+      const conceptLabel = focusConcept || "a következő fogalmat";
+      return `Fázis: Tanítás (falatnyi) — feltételezd, hogy a felhasználó semmit nem tud. Köszönés és bevezető tilos — az első mondat a tananyag legyen. Tanítsd PONTOSAN EGY fogalmat: "${conceptLabel}" (a(z) "${currentIsland.title}" részből). MAX 4 mondat, MAX ~500 karakter. Pontosan 1 rövid tananyagi példa vagy hétköznapi analógia. Több fogalmat, listát, más szigetet vagy későbbi témát tilos említeni. ${opener} Vágás tilos: mindig fejezd be az utolsó mondatot — ha nem fér ki, rövidítsd a példát, soha ne hagyd félbe a mondatot. Beszélj magyarul.`;
+    }
+
+    if (islandStep === "teach" && isFollowUp) {
+      return `Fázis: Tanítás, folytatás — tanárként válaszolj a felhasználó kérdésére vagy reagálj a visszajelzésére. Feltételezd, hogy a felhasználó kezdő. Válasz MAX 4 mondatban, pontosan 1 rövid példával. Ha értetlenséget jelez, magyarázd ELTÉRŐ megközelítéssel. Ne osztályozz, ne válts diák-szerepbe, ne kérdezz olyat, amit még nem magyaráztál el. Köszönés és bevezető tilos. Vágás tilos: mindig fejezd be az utolsó mondatot. Beszélj magyarul.`;
     }
 
     if (islandStep === "assess" && !isFollowUp) {
@@ -1155,7 +1326,7 @@ function getPhaseInstruction(
           return focusWords.some((w) => lower.includes(w));
         }) ?? null;
       const probeHint = probe ? ` Kiindulásnak használhatod ezt a kérdést: "${probe}".` : "";
-      return `Fázis: Ellenőrzés — fordított tanár. Te most egy lelkes, de értetlen diák vagy, a felhasználó a tanárod. A(z) "${currentIsland.title}" témából a következő fogalmat NEM érted: "${focus}". Tegyél fel EGYETLEN természetes, diákos kérdést erről a fogalomról — olyat, amire csak valódi megértéssel lehet jól válaszolni, bemagolt definícióval nem. Ne magyarázz, ne segíts, csak kérdezz. Beszélj magyarul.${probeHint}`;
+      return `Fázis: Ellenőrzés — fordított tanár. Te most egy lelkes, de értetlen diák vagy, a felhasználó a tanárod. A(z) "${currentIsland.title}" témából a következő fogalmat NEM érted: "${focus}". Kezdd könnyű visszamondó kérdéssel ("Mondd el saját szavaiddal, hogy te hogy magyaráznád el..."), ne trükkös megértéstesztelővel. Tegyél fel EGYETLEN természetes, diákos kérdést erről a fogalomról — olyat, amire csak valódi megértéssel lehet jól válaszolni, bemagolt definícióval nem. Ne magyarázz, ne segíts, csak kérdezz. Beszélj magyarul.${probeHint}`;
     }
 
     if ((islandStep === "assess" || islandStep === "remediation") && isFollowUp) {

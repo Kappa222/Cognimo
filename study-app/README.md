@@ -35,7 +35,7 @@ The AI plays the persona of **Lumi** (meaning "light", from "lumen") — a frien
 | Topics | Per-user CRUD inside a subject |
 | AI output style | Streaming responses (real-time token output) |
 | Session storage | Cookies — so server-side code (proxy, API routes) can read auth state |
-| Learning flow | Island-based: AI analyzes materials → splits into logical sections (islands). Each island = interactive teaching (scenario/socratic/conversational) → Inverted Teacher probe → mini-quiz (6 MCQ on island's key concepts). After each island, user returns to roadmap to start the next. Final island → completion screen |
+| Learning flow | Island-based: AI analyzes materials → splits into logical sections (islands). Each island = bite-size teaching from zero (no greeting, 1 concept per Lumi message ≤4 sentences + 1 example, quick taps [Értem, tovább →] / [🧪 Példát kérek] / [🪶 Egyszerűbben] + free Q&A) → [Értem, jöhet a kikérdezés →] button handover on last concept → gentle Inverted Teacher probe (easy recap first) → mini-quiz (6 MCQ on island's key concepts). After each island, user returns to roadmap to start the next. Final island → completion screen |
 | Checkpoints | Saved after island's mini-quiz completes (not during); quitting mid-island restarts that island from teaching |
 | Progress UI | Topic detail page — horizontal roadmap with N island circles (titles below, completed / current / locked). Learn page has `current/N` progress bar + current island title badge |
 | Card style | `rounded-2xl border-zinc-200/60 bg-white shadow-sm` with hover lift |
@@ -203,8 +203,8 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 
 | Sub-step | Mode | Advance Mechanism |
 |---|---|---|
-| Teach | AI streams interactive teaching (scenario/socratic/conversational) | User types response → advances to Probe |
-| Probe | AI uses Inverted Teacher (acts confused, asks probe_questions) | User answers → advances to Mini-quiz |
+| Teach | Lumi teaches 1 concept/message (≤4 sentences, 1 example, prompt-only brevity with complete-sentence guard). Free Q&A + quick taps [Értem, tovább →] / [🧪 Példát kérek] / [🪶 Egyszerűbben] | [Értem, tovább →] per concept, [Értem, jöhet a kikérdezés →] on last → Probe |
+| Probe | AI uses Inverted Teacher (acts confused, gentle recap question first, then probe_questions) | User answers → advances to Mini-quiz |
 | Mini-quiz | 6 MCQ — select → [Ellenőrzés] → feedback → [Következő] | **Manual** — two clicks per question. Last question → save checkpoint → redirect to roadmap (or completion if final island) |
 
 #### Tasks Breakdown
@@ -339,6 +339,9 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 21. **F14 — Storage key fix:** UUID-only storage keys (raw client filenames with spaces/accents caused Supabase "Invalid key" rejections); defensive key parsing on delete; storage/DB errors mapped to Hungarian messages
 22. **F15 — Multi-PDF upload queue:** PDF tab accepts multiple files (drag-drop + multi-select, max 10 per run, sequential `POST /api/materials`); auto-title from filename (editable inline, 80-char cap, `Névtelen PDF` fallback); client pre-validation (PDF-only, 25 MB, Hungarian errors); per-file pending/uploading/done/error states with indeterminate progress + aggregate K/N bar; per-file retry; success summary (`N sikeres, M sikertelen`); `SHORT_EXTRACTION` warning kept per file and globally; server route unchanged
 23. **F26 — Deterministic island quizzes + finale:** island flow is now teach → Inverted probe → persisted quiz (4 MCQ + 2 typed, generated once via `POST /api/islands/quiz`, identical on redo) → blended score screen (60% quiz / 40% teaching) → checkpoint. Typed answers graded by `POST /api/quiz/grade`. Gated 🏁 finale (`/learn?finale=1`): 3-round comprehensive inverted session (weakest-first focus from `concept_mastery`) + persisted 10-question big quiz (`POST /api/topic/quiz`). Roadmap shows best-score badges + finale strip; stats tab adds per-island scores and “Amit még gyakorolnod kell” gap list. Migrations `011_island_quizzes.sql`, `012_quiz_type_columns.sql` (+ `concept` on `quiz_questions`); shared generator/judge in `lib/quiz-gen.ts`; `QuizRunner` / `TypedQuestion` / `IslandScoreScreen` / `FinaleRunner` components; review mode replays quizzes without touching progress
+24. **Teach-first handover:** island teach is now direct systematic explanation from zero (no greeting, key_concepts in order, socratic redefined to explain-first in `/api/analyze`). Multi-turn free Q&A via `Kérdezz bátran...` input; explicit `[Értem, jöhet a kikérdezés →]` button enters the gentle inverted probe (easy recap first). `teachRound` tracked locally + in `assess_state`; no migration.
+25. **Bite-size teaching:** one concept per Lumi message (≤4 sentences, ~500 chars, 1 example; prompt-only brevity with complete-sentence guard — no token cap, caps caused mid-sentence cuts). Quick taps `[Értem, tovább →]` (silent advance) / `[🧪 Példát kérek]` / `[🪶 Egyszerűbben]` (same-concept re-explain) + free-text Q&A. `teachConceptIndex` persisted in `assess_state`; handover button appears on last concept. No migration.
+26. **Double-stream fix + dedupe:** `streamAIResponse` retry loop never exited after success, so every Lumi turn was streamed, saved and rendered twice. Fixed with return-on-success + `streamingRef` in-flight guard (+ read-time collapse of consecutive identical messages on load). Migration `013_dedupe_chat_messages.sql` physically deletes the duplicate `chat_messages` rows (per-session `lag()` over `(created_at, id)`, keeps earliest; idempotent).
 
 ## Getting Started
 
@@ -361,7 +364,7 @@ Byte-identical on redo: quiz questions, probe questions (already in `plan`), sco
 ### Target island flow
 
 ```
-Tanítás (scoped, generative) → Inverted probe (+remediation) → Kvíz (4 MCQ + 2 typed, persisted)
+Tanítás (bite-size: 1 fogalom/üzenet, ≤4 mondat + 1 példa, tovább-lépés gombokkal) → Inverted probe (gentle recap first, +remediation) → Kvíz (4 MCQ + 2 typed, persisted)
 → Island pontszám képernyő → checkpoint mentés → roadmap
 ```
 
