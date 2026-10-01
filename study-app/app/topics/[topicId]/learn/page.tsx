@@ -3,11 +3,11 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { supabase } from "../../../../lib/supabase";
 import { useSessionPhaseManager } from "../../../lib/useSessionPhaseManager";
 import { readTextStream } from "../../../lib/stream";
 import { getPhaseInstruction } from "../../../lib/prompts";
 import { useSessionSaves } from "./useSessionSaves";
+import { loadLearnContext } from "./loadLearnContext";
 import {
   accumulateTeachingVerdicts,
   createTeachingTally,
@@ -127,168 +127,35 @@ export default function LearnPage() {
     setPageLoading(true);
     setError("");
 
-    const { data: { user } } = await supabase.auth.getUser();
-    if (isStale()) return;
-    if (!user) { router.push("/login"); return; }
-
-    const { data: t, error: topicErr } = await supabase
-      .from("topics")
-      .select("*")
-      .eq("id", topicId)
-      .single();
-    if (isStale()) return;
-    if (topicErr || !t) { setError("Nem sikerült betölteni a témát."); setPageLoading(false); return; }
-    setTopic(t);
-
-    const { count } = await supabase
-      .from("study_materials")
-      .select("*", { count: "exact", head: true })
-      .eq("topic_id", topicId);
-    if (isStale()) return;
-    if (count !== null) setMaterialsCount(count);
-
-    let activeSession: ChatSession | null = null;
-    const res = await fetch(`/api/sessions?topic_id=${topicId}`);
-    if (isStale()) return;
-    if (res.ok) {
-      const existing: ChatSession | null = await res.json();
-      if (existing && existing.status === "in_progress") {
-        activeSession = existing;
-        const msgRes = await fetch(`/api/sessions/${existing.id}`);
-        if (isStale()) return;
-        if (msgRes.ok) {
-          const { session: sessionData, messages } = await msgRes.json();
-          if (isStale()) return;
-
-          // Load islands from plan column (new) or fallback to __ISLANDS__: message (old)
-          let loadedIslands: Island[] = [];
-          if (sessionData?.plan && Array.isArray(sessionData.plan) && sessionData.plan.length > 0) {
-            loadedIslands = sessionData.plan;
-          } else {
-            const islandMsg = messages.find(
-              (m: ChatMessage) => m.role === "assistant" && m.content.startsWith("__ISLANDS__:"),
-            );
-            if (islandMsg) {
-              try {
-                loadedIslands = JSON.parse(islandMsg.content.slice(11));
-              } catch { /* ignore */ }
-            }
-          }
-
-          if (loadedIslands.length === 0) {
-            // Unusable leftover (e.g. created before the plan column
-            // existed): it can never start and would render as instant
-            // completion. Abandon it so a fresh plan gets generated.
-            try {
-              await fetch(`/api/sessions/${existing.id}/checkpoint`, {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ current_checkpoint: 0, status: "abandoned" }),
-              });
-            } catch (err) {
-              console.error("Failed to abandon plan-less session:", err);
-            }
-            if (isStale()) return;
-            setSession(null);
-            setStoredMessages([]);
-            setDisplayMessages([]);
-          } else {
-            setSession(activeSession);
-            // Read-time cleanup of the duplicate-turn bug (retry loop ran
-            // every stream twice): collapse consecutive same-role identical
-            // messages. DB rows are left untouched — this only affects what
-            // is displayed and sent as AI context from now on.
-            const dedupedMessages = (messages as ChatMessage[]).filter(
-              (m: ChatMessage, i: number, arr: ChatMessage[]) =>
-                i === 0 || m.role !== arr[i - 1].role || m.content !== arr[i - 1].content,
-            );
-            setStoredMessages(dedupedMessages);
-            setIslands(loadedIslands);
-
-          // Restore assess/teach state from session
-          const sData = sessionData as { island_step?: string; assess_state?: { round: number; proven: string[]; weak: string[]; remediationCount: number; nextFocus: string; teachRound?: number; teachConceptIndex?: number } } | undefined;
-          if (sData?.island_step === "teach" && sData.assess_state) {
-            const island = loadedIslands[existing.current_checkpoint];
-            const maxIdx = Math.max(0, (island?.key_concepts.length ?? 1) - 1);
-            setIslandStep("teach");
-            setTeachRound(sData.assess_state.teachRound ?? 0);
-            setTeachConceptIndex(Math.min(Math.max(0, sData.assess_state.teachConceptIndex ?? 0), maxIdx));
-          } else if (sData?.island_step && (sData.island_step === "assess" || sData.island_step === "remediation")) {
-            setIslandStep(sData.island_step);
-            if (sData.assess_state) {
-              setAssessRound(sData.assess_state.round);
-              setProvenConcepts(sData.assess_state.proven ?? []);
-              setWeakConcepts(sData.assess_state.weak ?? []);
-              setRemediationCount(sData.assess_state.remediationCount ?? 0);
-              setTeachRound(sData.assess_state.teachRound ?? 0);
-              setTeachConceptIndex(sData.assess_state.teachConceptIndex ?? 0);
-              assessQuestionRef.current = sData.assess_state.nextFocus ?? "";
-            } else {
-              // assess_state lost (e.g. save failed) but mastery survived:
-              // rebuild proven/weak for the current island from mastery.
-              const island = loadedIslands[existing.current_checkpoint];
-              if (island) {
-                const { data: mastery } = await supabase
-                  .from("concept_mastery")
-                  .select("concept, status")
-                  .eq("topic_id", topicId);
-                if (isStale()) return;
-                const byConcept = new Map(
-                  ((mastery ?? []) as { concept: string; status: string }[]).map((m) => [m.concept, m.status]),
-                );
-                setProvenConcepts(
-                  island.key_concepts.filter((c) => {
-                    const s = byConcept.get(c);
-                    return s === "solid" || s === "seen";
-                  }),
-                );
-                setWeakConcepts(
-                  island.key_concepts.filter((c) => byConcept.get(c) === "shaky"),
-                );
-                setAssessRound(1);
-                assessQuestionRef.current = island.key_concepts[0] ?? "";
-              }
-            }
-          }
-
-          if (isStale()) return;
-          setDisplayMessages(
-            dedupedMessages
-              .filter((m: ChatMessage) => !m.content.startsWith("__ISLANDS__:"))
-              .map((m: ChatMessage) => ({
-                role: m.role === "assistant" ? "ai" : "user",
-                text: m.content,
-              })),
-          );
-          }
-        }
-      }
+    const result = await loadLearnContext(topicId, isStale);
+    if (result.kind === "aborted" || isStale()) return;
+    if (result.kind === "no-auth") {
+      router.push("/login");
+      return;
+    }
+    if (result.kind === "topic-error") {
+      setError("Nem sikerült betölteni a témát.");
+      setPageLoading(false);
+      return;
     }
 
-    // No resumable session: a completed session's plan still enables island
-    // review (?island=N). Messages are not restored — review starts fresh.
-    if (!activeSession) {
-      try {
-        const anyRes = await fetch(`/api/sessions?topic_id=${topicId}&status=any`);
-        if (isStale()) return;
-        if (anyRes.ok) {
-          const latest: (ChatSession & { plan?: unknown }) | null = await anyRes.json();
-          if (
-            latest &&
-            Array.isArray(latest.plan) &&
-            (latest.plan as Island[]).length > 0
-          ) {
-            activeSession = latest;
-            setSession(latest);
-            setIslands(latest.plan as Island[]);
-          }
-        }
-      } catch (err) {
-        console.error("Failed to load latest session:", err);
-      }
+    setTopic(result.topic);
+    if (result.materialsCount !== null) setMaterialsCount(result.materialsCount);
+    setSession(result.session);
+    setStoredMessages(result.messages);
+    setDisplayMessages(result.displayMessages);
+    setIslands(result.islands);
+    if (result.restore) {
+      const r = result.restore;
+      setIslandStep(r.islandStep);
+      if (r.teachRound !== undefined) setTeachRound(r.teachRound);
+      if (r.teachConceptIndex !== undefined) setTeachConceptIndex(r.teachConceptIndex);
+      if (r.assessRound !== undefined) setAssessRound(r.assessRound);
+      if (r.proven !== undefined) setProvenConcepts(r.proven);
+      if (r.weak !== undefined) setWeakConcepts(r.weak);
+      if (r.remediationCount !== undefined) setRemediationCount(r.remediationCount);
+      if (r.nextFocus !== undefined) assessQuestionRef.current = r.nextFocus;
     }
-
-    if (isStale()) return;
     setPageLoading(false);
   }, [topicId, router]);
 
