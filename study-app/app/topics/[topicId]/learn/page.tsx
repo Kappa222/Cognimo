@@ -7,6 +7,7 @@ import { supabase } from "../../../../lib/supabase";
 import { useSessionPhaseManager } from "../../../lib/useSessionPhaseManager";
 import { readTextStream } from "../../../lib/stream";
 import { getPhaseInstruction } from "../../../lib/prompts";
+import { useSessionSaves } from "./useSessionSaves";
 import {
   accumulateTeachingVerdicts,
   createTeachingTally,
@@ -60,7 +61,6 @@ export default function LearnPage() {
   const [quizQuestions, setQuizQuestions] = useState<QuizRunnerQuestion[]>([]);
   const [quizError, setQuizError] = useState("");
   const [quizResult, setQuizResult] = useState<QuizAttemptBreakdown | null>(null);
-  const [saveError, setSaveError] = useState("");
   const [islands, setIslands] = useState<Island[]>([]);
   const [islandStep, setIslandStep] = useState<"teach" | "assess" | "remediation">("teach");
   const [assessRound, setAssessRound] = useState(0);
@@ -80,6 +80,8 @@ export default function LearnPage() {
     retry: "ai" | "evaluate";
   } | null>(null);
 
+  const { saveError, clearSaveError, saveMessage, saveCheckpoint } =
+    useSessionSaves(session, isReview);
   const islandTitles = islands.map((i) => i.title);
   const phase = useSessionPhaseManager(islandTitles);
   const abortRef = useRef<AbortController | null>(null);
@@ -292,67 +294,6 @@ export default function LearnPage() {
 
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { initPage(); }, [initPage]);
-
-  const saveMessage = useCallback(async (role: "user" | "assistant", content: string) => {
-    if (!session) return false;
-    // Review replays persist nothing — conversation stays local to the visit.
-    if (isReview) return true;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      if (attempt > 0) await new Promise((r) => setTimeout(r, 1000));
-      try {
-        const res = await fetch(`/api/sessions/${session.id}/messages`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ role, content }),
-        });
-        if (res.ok) {
-          setSaveError("");
-          return true;
-        }
-        console.error("Failed to save message:", res.status, await res.text());
-      } catch (err) {
-        console.error("Failed to save message:", err);
-      }
-    }
-    setSaveError("Nem sikerült menteni az üzenetet. Újratöltéskor elveszhet.");
-    return false;
-  }, [session, isReview]);
-
-  const saveCheckpoint = useCallback(async (
-    checkpoint: number,
-    status?: string,
-    extra?: { island_step?: string | null; assess_state?: unknown },
-  ) => {
-    if (!session) {
-      console.warn("saveCheckpoint dropped: no session");
-      return false;
-    }
-    // Review replays must never move the saved checkpoint or status.
-    if (isReview) return true;
-    const body: Record<string, unknown> = { current_checkpoint: checkpoint };
-    if (status) body.status = status;
-    if (extra && "island_step" in extra) body.island_step = extra.island_step;
-    if (extra && "assess_state" in extra) body.assess_state = extra.assess_state;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      if (attempt > 0) await new Promise((r) => setTimeout(r, 1000));
-      try {
-        const res = await fetch(`/api/sessions/${session.id}/checkpoint`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        if (res.ok) {
-          setSaveError("");
-          return true;
-        }
-        console.error("Failed to save checkpoint:", res.status, await res.text());
-      } catch (err) {
-        console.error("Failed to save checkpoint:", err);
-      }
-    }
-    setSaveError("Nem sikerült menteni az előrehaladást. Újratöltéskor elveszhet.");
-    return false;
-  }, [session, isReview]);
 
   const saveAssessState = useCallback(async () => {
     await saveCheckpoint(phase.currentCheckpoint, undefined, {
@@ -796,7 +737,7 @@ export default function LearnPage() {
       clearIslandLocals();
       setStoredMessages([]);
       setDisplayMessages([]);
-      setSaveError("");
+      clearSaveError();
       setChatError(null);
       lastAnswerRef.current = "";
       phase.resumeFrom(idx);
@@ -821,7 +762,7 @@ export default function LearnPage() {
       // Completed island replay: fresh assess state, nothing persisted.
       setIsReview(true);
       clearIslandLocals();
-      setSaveError("");
+      clearSaveError();
       setChatError(null);
       lastAnswerRef.current = "";
       phase.resumeFrom(idx);
