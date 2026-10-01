@@ -1270,7 +1270,6 @@ export default function LearnPage() {
             questions={quizQuestions}
             submitLabel="Beküldés"
             onSubmit={submitQuiz}
-            onDone={() => {}}
           />
         )}
 

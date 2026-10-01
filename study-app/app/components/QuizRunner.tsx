@@ -14,7 +14,6 @@ interface QuizRunnerProps {
   questions: QuizRunnerQuestion[];
   submitLabel?: string;
   onSubmit: (answers: QuizSubmittedAnswer[]) => Promise<QuizAttemptBreakdown>;
-  onDone: (result: QuizAttemptBreakdown) => void;
 }
 
 export default function QuizRunner({
@@ -23,7 +22,6 @@ export default function QuizRunner({
   questions,
   submitLabel = "Beküldés",
   onSubmit,
-  onDone,
 }: QuizRunnerProps) {
   const [mcqChoices, setMcqChoices] = useState<(number | null)[]>(
     questions.map(() => null),
@@ -47,8 +45,7 @@ export default function QuizRunner({
       typedText: q.type === "typed" ? typedTexts[i].trim() : null,
     }));
     try {
-      const result = await onSubmit(answers);
-      onDone(result);
+      await onSubmit(answers);
     } catch (err) {
       console.error("Quiz submit failed:", err);
       setError(

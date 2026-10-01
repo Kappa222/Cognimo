@@ -454,7 +454,6 @@ export default function FinaleRunner({
             questions={quizQuestions}
             submitLabel="Beküldés"
             onSubmit={submitFinaleQuiz}
-            onDone={() => {}}
           />
         )}
 

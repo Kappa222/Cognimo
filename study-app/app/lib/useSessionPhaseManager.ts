@@ -17,16 +17,13 @@ export interface PhaseManagerState {
 }
 
 export interface PhaseManagerActions {
-  start: () => void;
   resumeFrom: (checkpoint: number) => void;
   goToNextStep: () => void;
   setSubPhase: (phase: SessionSubPhase) => void;
-  reset: () => void;
 }
 
 export function useSessionPhaseManager(
   islandTitles: string[] = [],
-  initialCheckpoint = 0,
 ): PhaseManagerState & PhaseManagerActions {
   const structure = useMemo(() => {
     const steps: SessionStep[] = islandTitles.map((_, i) => ({
@@ -39,12 +36,8 @@ export function useSessionPhaseManager(
 
   const maxIndex = structure.length - 1;
 
-  const [stepIndex, setStepIndex] = useState(
-    Math.min(initialCheckpoint, maxIndex),
-  );
-  const [subPhase, setSubPhase] = useState<SessionSubPhase>(
-    initialCheckpoint > 0 ? "waiting-response" : "idle",
-  );
+  const [stepIndex, setStepIndex] = useState(0);
+  const [subPhase, setSubPhase] = useState<SessionSubPhase>("idle");
 
   const currentStep = useMemo(
     () => (structure.length > 0 ? structure[Math.min(stepIndex, maxIndex)] ?? null : null),
@@ -66,14 +59,6 @@ export function useSessionPhaseManager(
     }
     return "Tanulás";
   }, [phaseName, stepIndex, islandTitles]);
-
-  const start = useCallback(() => {
-    // Empty islands would build a lone [complete] step and flash the
-    // completion screen with a stuck thinking indicator.
-    if (islandTitles.length === 0 || structure.length === 0) return;
-    setStepIndex(0);
-    setSubPhase("ai-responding");
-  }, [structure.length, islandTitles.length]);
 
   const resumeFrom = useCallback((checkpoint: number) => {
     if (islandTitles.length === 0 || structure.length === 0) return;
@@ -101,11 +86,6 @@ export function useSessionPhaseManager(
     }
   }, [stepIndex, structure, maxIndex]);
 
-  const reset = useCallback(() => {
-    setStepIndex(0);
-    setSubPhase("idle");
-  }, []);
-
   return {
     stepIndex,
     currentStep,
@@ -117,10 +97,8 @@ export function useSessionPhaseManager(
     phaseName,
     phaseBadge,
     islandCount: islandTitles.length,
-    start,
     resumeFrom,
     goToNextStep,
     setSubPhase,
-    reset,
   };
 }
