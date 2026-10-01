@@ -96,6 +96,9 @@ export default function LearnPage() {
   const lastAnswerRef = useRef("");
   // initPage run id: stale runs after a topicId change bail out early.
   const initRunRef = useRef(0);
+  // Tracked deferred subPhase flip — cleared on unmount so navigation can't
+  // start a stream on an unmounted page.
+  const subPhaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const MAX_ASSESS_ROUNDS = 4;
   const MAX_REMEDIATION = 2;
@@ -553,6 +556,13 @@ export default function LearnPage() {
     setIsStreaming(true);
     setStreamingText("");
 
+    // Deferred subPhase flip: lets React commit islandStep/assessRound before
+    // the next AI turn reads them.
+    const scheduleAiResponding = () => {
+      if (subPhaseTimerRef.current) clearTimeout(subPhaseTimerRef.current);
+      subPhaseTimerRef.current = setTimeout(() => phase.setSubPhase("ai-responding"), 100);
+    };
+
     // One automatic retry with backoff; final failure becomes an inline
     // retry panel (chatError), never a full-page error.
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -585,10 +595,14 @@ export default function LearnPage() {
           fullText += chunk;
           setStreamingText(fullText);
         }
-      // Flush any trailing multi-byte character.
-      fullText += decoder.decode();
+        // Flush any trailing multi-byte character.
+        fullText += decoder.decode();
 
-      if (fullText.trim()) {
+        if (!fullText.trim()) {
+          // Empty response counts as a failed attempt — throw to retry.
+          throw new Error("Empty response from AI");
+        }
+
         await saveMessage("assistant", fullText);
         setStoredMessages((prev) => [...prev, { role: "assistant", content: fullText, id: "", session_id: session.id, created_at: new Date().toISOString() }]);
         setDisplayMessages((prev) => [...prev, { role: "ai", text: fullText }]);
@@ -630,7 +644,7 @@ export default function LearnPage() {
               hasUserRespondedRef.current = false;
               await saveAssessState();
               // Trigger remediation micro-lesson immediately
-              setTimeout(() => phase.setSubPhase("ai-responding"), 100);
+              scheduleAiResponding();
             } else {
               // Assessment exhausted — the quiz measures what stuck.
               await enterQuiz();
@@ -642,13 +656,15 @@ export default function LearnPage() {
             setAssessRound((r) => r + 1);
             hasUserRespondedRef.current = false;
             await saveAssessState();
-            setTimeout(() => phase.setSubPhase("ai-responding"), 100);
+            scheduleAiResponding();
           } else {
             phase.setSubPhase("waiting-response");
           }
         } else if (stepPhase === "complete") {
           // No-op, completion screen handles it
         } else {
+          // Defensive fallback: no current step (empty/out-of-range plan).
+          // Settle instead of spinning — never leave ai-responding hanging.
           if (hasUserRespondedRef.current) {
             hasUserRespondedRef.current = false;
             phase.goToNextStep();
@@ -661,10 +677,6 @@ export default function LearnPage() {
         streamingRef.current = false;
         setIsStreaming(false);
         return;
-      } else {
-        // Empty response counts as a failed attempt — throw to retry.
-        throw new Error("Empty response from AI");
-      }
       } catch (err) {
         if ((err as Error).name === "AbortError") {
           streamingRef.current = false;
@@ -738,6 +750,7 @@ export default function LearnPage() {
   useEffect(() => {
     return () => {
       abortRef.current?.abort();
+      if (subPhaseTimerRef.current) clearTimeout(subPhaseTimerRef.current);
     };
   }, []);
 
