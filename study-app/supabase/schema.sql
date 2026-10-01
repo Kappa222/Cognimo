@@ -10,8 +10,10 @@
 --   006 island_step/assess_state   011 island_quizzes
 --   007 storage cleanup trigger    012 quiz typed columns
 --                                   013 chat message dedupe
--- 007 (app_secrets + pg_net trigger) is legacy: the application deletes
--- storage files itself, so it is intentionally NOT part of this baseline.
+--                                   014 drop legacy cleanup trigger
+-- 007 (app_secrets + pg_net trigger) was legacy: the application deletes
+-- storage files itself, so it was never part of this baseline — and 014
+-- now drops it from existing databases.
 -- Keep this file in sync whenever a migration changes the structure.
 -- ============================================================
 
