@@ -45,7 +45,6 @@ export default function FinaleRunner({
   const [round, setRound] = useState(1);
   const [assessPhase, setAssessPhase] = useState<AssessPhase>("asking");
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
-  const [history, setHistory] = useState<{ role: string; content: string }[]>([]);
   const [streamingText, setStreamingText] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [isGrading, setIsGrading] = useState(false);
@@ -58,6 +57,10 @@ export default function FinaleRunner({
   const teachingRef = useRef({ correct: 0, partial: 0, total: 0 });
   const contentEndRef = useRef<HTMLDivElement>(null);
   const sendingRef = useRef(false);
+  // Chat history lives in a ref (never rendered): closures created earlier in
+  // the same turn must see the answer that was just appended, otherwise the
+  // reaction stream is sent without it.
+  const historyRef = useRef<{ role: string; content: string }[]>([]);
 
   useEffect(() => {
     contentEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -71,7 +74,7 @@ export default function FinaleRunner({
 
   const pushAssistant = useCallback((text: string) => {
     setMessages((prev) => [...prev, { role: "ai", text }]);
-    setHistory((prev) => [...prev, { role: "assistant", content: text }]);
+    historyRef.current = [...historyRef.current, { role: "assistant", content: text }];
   }, []);
 
   const streamChat = useCallback(
@@ -81,6 +84,7 @@ export default function FinaleRunner({
       setIsStreaming(true);
       setStreamingText("");
       try {
+        const history = historyRef.current;
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -127,7 +131,7 @@ export default function FinaleRunner({
         setIsStreaming(false);
       }
     },
-    [sessionId, history, pushAssistant],
+    [sessionId, pushAssistant],
   );
 
   const askRound = useCallback(
@@ -231,8 +235,7 @@ export default function FinaleRunner({
     }
     setError("");
     setMessages((prev) => [...prev, { role: "user", text: trimmed }]);
-    const apiHistory = [...history, { role: "user", content: trimmed }];
-    setHistory(apiHistory);
+    historyRef.current = [...historyRef.current, { role: "user", content: trimmed }];
     setAssessPhase("grading");
     setIsGrading(true);
     try {
@@ -288,8 +291,34 @@ export default function FinaleRunner({
     }
   };
 
+  // Marking the topic completed is a separate step from grading: the attempt
+  // is already persisted, so a failed save must not discard the score. Two
+  // attempts, then the score screen renders with an inline retry banner.
+  const markCompleted = useCallback(async (): Promise<boolean> => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetch(`/api/sessions/${sessionId}/checkpoint`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            current_checkpoint: totalIslands,
+            status: "completed",
+            island_step: "teach",
+            assess_state: null,
+          }),
+        });
+        if (!res.ok) throw new Error(`Checkpoint error: ${res.status}`);
+        return true;
+      } catch (err) {
+        console.error("Finale completion save failed:", err);
+        if (attempt === 0) await new Promise((r) => setTimeout(r, 1000));
+      }
+    }
+    return false;
+  }, [sessionId, totalIslands]);
+
   const submitFinaleQuiz = useCallback(
-    async (answers: QuizSubmittedAnswer[]) => {
+    async (answers: QuizSubmittedAnswer[]): Promise<QuizAttemptBreakdown> => {
       const visit = teachingRef.current;
       const teachingCorrect = Math.round(visit.correct + 0.5 * visit.partial);
       const res = await fetch("/api/topic/quiz/attempt", {
@@ -308,21 +337,17 @@ export default function FinaleRunner({
       }
       const result = (await res.json()) as QuizAttemptBreakdown;
       // Finale completion: single PUT marks the topic done.
-      await fetch(`/api/sessions/${sessionId}/checkpoint`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          current_checkpoint: totalIslands,
-          status: "completed",
-          island_step: "teach",
-          assess_state: null,
-        }),
-      });
+      const saved = await markCompleted();
+      if (!saved) {
+        setError(
+          "A kvíz eredménye megvan, de a téma lezárását nem sikerült menteni. Próbáld újra!",
+        );
+      }
       setQuizResult(result);
       setStage("done");
       return result;
     },
-    [topicId, sessionId, totalIslands],
+    [topicId, markCompleted],
   );
 
   const allMessages = [
@@ -392,10 +417,21 @@ export default function FinaleRunner({
           <div className="flex items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600 dark:border-red-800 dark:bg-red-950/30 dark:text-red-400">
             <p>{error}</p>
             <button
-              onClick={() => {
+              onClick={async () => {
                 setError("");
-                if (stage === "assess") askRound(round, focusConcepts);
-                else loadQuiz();
+                if (stage === "done") {
+                  // Score is already stored — only the completion save failed.
+                  const saved = await markCompleted();
+                  if (!saved) {
+                    setError(
+                      "A téma lezárását továbbra sem sikerült menteni. Próbáld újra később!",
+                    );
+                  }
+                } else if (stage === "assess") {
+                  askRound(round, focusConcepts);
+                } else {
+                  loadQuiz();
+                }
               }}
               className="shrink-0 cursor-pointer rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-all hover:bg-violet-600 active:scale-[0.98]"
             >
