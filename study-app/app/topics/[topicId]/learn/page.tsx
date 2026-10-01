@@ -469,6 +469,7 @@ export default function LearnPage() {
           answers,
           teachingCorrect,
           teachingTotal: visit.total,
+          isReview,
         }),
       });
       if (!res.ok) {
@@ -479,7 +480,7 @@ export default function LearnPage() {
       setQuizResult(result);
       return result;
     },
-    [islands, phase, session, topicId],
+    [islands, phase, session, topicId, isReview],
   );
 
   // Clear local assess/teach state when leaving an island, so a revisit or a

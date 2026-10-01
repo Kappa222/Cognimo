@@ -40,7 +40,7 @@ export async function POST(req: Request) {
   } catch {
     return new Response("Invalid JSON", { status: 400 });
   }
-  const { topicId, islandTitle, answers, teachingCorrect, teachingTotal } = body;
+  const { topicId, islandTitle, answers, teachingCorrect, teachingTotal, isReview } = body;
   if (
     typeof topicId !== "string" || !topicId ||
     typeof islandTitle !== "string" || !islandTitle.trim() ||
@@ -51,12 +51,15 @@ export async function POST(req: Request) {
     teachingCorrect < 0 || teachingCorrect > MAX_COUNT ||
     typeof teachingTotal !== "number" || !Number.isInteger(teachingTotal) ||
     teachingTotal < 0 || teachingTotal > MAX_COUNT ||
-    teachingCorrect > teachingTotal
+    teachingCorrect > teachingTotal ||
+    (isReview !== undefined && typeof isReview !== "boolean")
   ) {
     return new Response("Invalid attempt", { status: 400 });
   }
   const title = (islandTitle as string).trim();
   const submitted = answers as SubmittedAnswer[];
+  // Review replays grade and return a breakdown but never touch stored stats.
+  const review = isReview === true;
 
   const { data: topic } = await supabase
     .from("topics")
@@ -145,22 +148,24 @@ export async function POST(req: Request) {
     teachingTotal > 0 ? Math.round((100 * (teachingCorrect as number)) / (teachingTotal as number)) : quizPct;
   const blended = Math.round(0.6 * quizPct + 0.4 * teachingPct);
 
-  const { error: insertError } = await supabase.from("island_quiz_attempts").insert({
-    user_id: user.id,
-    topic_id: topicId,
-    island_title: title,
-    correct_count: results.filter((r) => r.verdict === "correct").length,
-    total: questions.length,
-    teaching_correct: teachingCorrect,
-    teaching_total: teachingTotal,
-    quiz_pct: quizPct,
-    teaching_pct: teachingPct,
-    blended,
-    answers: results as unknown as Record<string, unknown>[],
-  });
-  if (insertError) {
-    console.error("Island attempt insert failed:", insertError);
-    return new Response("Failed to save attempt", { status: 500 });
+  if (!review) {
+    const { error: insertError } = await supabase.from("island_quiz_attempts").insert({
+      user_id: user.id,
+      topic_id: topicId,
+      island_title: title,
+      correct_count: results.filter((r) => r.verdict === "correct").length,
+      total: questions.length,
+      teaching_correct: teachingCorrect,
+      teaching_total: teachingTotal,
+      quiz_pct: quizPct,
+      teaching_pct: teachingPct,
+      blended,
+      answers: results as unknown as Record<string, unknown>[],
+    });
+    if (insertError) {
+      console.error("Island attempt insert failed:", insertError);
+      return new Response("Failed to save attempt", { status: 500 });
+    }
   }
 
   return new Response(
