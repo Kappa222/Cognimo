@@ -1,4 +1,5 @@
 import { requireUser } from "../../../lib/api-auth";
+import { rateLimit } from "../../../lib/rate-limit";
 import { readJsonBody, jsonBodyError } from "../../../lib/http";
 import { completeJson } from "../../../lib/ai";
 import { getIslandContext } from "../../../lib/chunks";
@@ -77,6 +78,9 @@ export async function POST(req: Request) {
   const auth = await requireUser();
   if (!auth.ok) return auth.response;
   const { supabase, user } = auth;
+
+  const rateLimited = rateLimit("evaluate:" + user.id, 30, 60000);
+  if (rateLimited) return rateLimited;
 
   const read = await readJsonBody(req);
   if (!read.ok) return jsonBodyError(read.reason);

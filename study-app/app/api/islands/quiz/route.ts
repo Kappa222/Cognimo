@@ -1,4 +1,5 @@
 import { requireUser } from "../../../../lib/api-auth";
+import { rateLimit } from "../../../../lib/rate-limit";
 import { readJsonBody, jsonBodyError } from "../../../../lib/http";
 import { getIslandContext } from "../../../../lib/chunks";
 import { islandConcepts } from "../../../../lib/plan";
@@ -12,6 +13,9 @@ export async function POST(req: Request) {
   const auth = await requireUser();
   if (!auth.ok) return auth.response;
   const { supabase, user } = auth;
+
+  const rateLimited = rateLimit("island-quiz:" + user.id, 10, 3600000);
+  if (rateLimited) return rateLimited;
 
   const read = await readJsonBody(req);
   if (!read.ok) return jsonBodyError(read.reason);
