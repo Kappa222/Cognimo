@@ -1,6 +1,18 @@
 -- ============================================================
--- Cognimo — Full Database Schema
+-- Cognimo — Full Database Schema (cumulative baseline)
 -- Execute this in the Supabase SQL Editor (one time setup)
+--
+-- This file is the target state for a FRESH database. Existing databases
+-- evolve through supabase/migrations/0XX_*.sql, run in order:
+--   003 session checkpoints        008 material_chunks
+--   004 concept_mastery tables     009 Lumi avatar PNG
+--   005 chat_sessions.plan         010 grounding indexes
+--   006 island_step/assess_state   011 island_quizzes
+--   007 storage cleanup trigger    012 quiz typed columns
+--                                   013 chat message dedupe
+-- 007 (app_secrets + pg_net trigger) is legacy: the application deletes
+-- storage files itself, so it is intentionally NOT part of this baseline.
+-- Keep this file in sync whenever a migration changes the structure.
 -- ============================================================
 
 -- 0. Extensions
@@ -162,6 +174,8 @@ create policy "Users can CRUD their own material chunks"
 
 create index idx_material_chunks_material_id on material_chunks(material_id);
 create index idx_material_chunks_user_id on material_chunks(user_id);
+-- Composite lookup used by per-island chunk retrieval (migration 010).
+create index idx_material_chunks_material_idx on material_chunks(material_id, idx);
 
 drop trigger if exists trg_material_chunks_user_id on material_chunks;
 create trigger trg_material_chunks_user_id
@@ -218,6 +232,11 @@ create table chat_sessions (
   total_checkpoints int not null default 7,
   status text not null default 'in_progress'
     check (status in ('in_progress', 'completed', 'abandoned')),
+  -- Island plan (from migration 005) + resume state (from migration 006):
+  -- the AI-generated island list and where teach/assess left off.
+  plan jsonb,
+  island_step text not null default 'teach',
+  assess_state jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -427,5 +446,74 @@ create index idx_island_quiz_attempts_topic_island on island_quiz_attempts(topic
 drop trigger if exists trg_island_quiz_attempts_user_id on island_quiz_attempts;
 create trigger trg_island_quiz_attempts_user_id
   before insert on island_quiz_attempts
+  for each row
+  execute function set_user_id();
+
+-- ============================================================
+-- 12. concept_mastery (per-concept mastery — migration 004)
+-- ============================================================
+create table concept_mastery (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references profiles(id) on delete cascade,
+  topic_id uuid not null references topics(id) on delete cascade,
+  concept text not null,
+  status text not null default 'unseen'
+    check (status in ('unseen', 'seen', 'shaky', 'solid')),
+  correct_count int not null default 0,
+  wrong_count int not null default 0,
+  last_source text,
+  updated_at timestamptz not null default now(),
+  unique (user_id, topic_id, concept)
+);
+
+alter table concept_mastery enable row level security;
+
+create policy "Users can CRUD their own concept_mastery"
+  on concept_mastery for all
+  using (auth.uid() = user_id);
+
+create index idx_concept_mastery_user_id on concept_mastery(user_id);
+create index idx_concept_mastery_topic_id on concept_mastery(topic_id);
+create index idx_concept_mastery_topic_concept on concept_mastery(topic_id, concept);
+
+drop trigger if exists trg_concept_mastery_user_id on concept_mastery;
+create trigger trg_concept_mastery_user_id
+  before insert on concept_mastery
+  for each row
+  execute function set_user_id();
+
+-- ============================================================
+-- 13. assessment_rounds (probe round log — migration 004, unique slot 010)
+-- ============================================================
+create table assessment_rounds (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references profiles(id) on delete cascade,
+  session_id uuid not null references chat_sessions(id) on delete cascade,
+  topic_id uuid not null references topics(id) on delete cascade,
+  island_title text not null,
+  round int not null,
+  is_remediation boolean not null default false,
+  question text not null,
+  user_answer text not null,
+  verdicts jsonb not null,
+  created_at timestamptz not null default now()
+);
+
+alter table assessment_rounds enable row level security;
+
+create policy "Users can CRUD their own assessment_rounds"
+  on assessment_rounds for all
+  using (auth.uid() = user_id);
+
+create index idx_assessment_rounds_user_id on assessment_rounds(user_id);
+create index idx_assessment_rounds_session_id on assessment_rounds(session_id);
+create index idx_assessment_rounds_topic_id on assessment_rounds(topic_id);
+-- One row per (session, round, remediation) — blocks double-submit races.
+create unique index uq_assessment_rounds_slot
+  on assessment_rounds(session_id, round, is_remediation);
+
+drop trigger if exists trg_assessment_rounds_user_id on assessment_rounds;
+create trigger trg_assessment_rounds_user_id
+  before insert on assessment_rounds
   for each row
   execute function set_user_id();
