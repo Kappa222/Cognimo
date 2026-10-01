@@ -153,6 +153,7 @@ export default function LoginPage() {
                 <input
                   type="email"
                   placeholder="Email"
+                  aria-label="Email"
                   autoComplete="email"
                   required
                   className="w-full rounded-lg border border-zinc-200 py-3 pl-11 pr-4 text-base outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20 dark:border-zinc-700 dark:bg-zinc-800 dark:focus:ring-accent/30"
@@ -169,6 +170,7 @@ export default function LoginPage() {
                 <input
                   type={showPassword ? "text" : "password"}
                   placeholder="Jelszó"
+                  aria-label="Jelszó"
                   autoComplete={mode === "login" ? "current-password" : "new-password"}
                   required
                   className="w-full rounded-lg border border-zinc-200 py-3 pl-11 pr-11 text-base outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20 dark:border-zinc-700 dark:bg-zinc-800 dark:focus:ring-accent/30"

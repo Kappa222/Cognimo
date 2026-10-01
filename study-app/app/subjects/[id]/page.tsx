@@ -174,6 +174,7 @@ export default function SubjectDetailPage() {
             <input
               type="text"
               placeholder="Téma neve (pl. II. világháború)"
+              aria-label="Téma neve"
               required
               className="rounded-lg border border-zinc-200 px-4 py-2.5 text-sm outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20 dark:border-zinc-700 dark:bg-zinc-800"
               value={topicName}
@@ -181,6 +182,7 @@ export default function SubjectDetailPage() {
             />
             <textarea
               placeholder="Leírás (opcionális)"
+              aria-label="Leírás"
               rows={2}
               className="rounded-lg border border-zinc-200 px-4 py-2.5 text-sm outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20 dark:border-zinc-700 dark:bg-zinc-800"
               value={topicDesc}
@@ -231,6 +233,7 @@ export default function SubjectDetailPage() {
                 <div className="flex flex-col gap-3">
                   <input
                     type="text"
+                    aria-label="Téma neve"
                     required
                     className="rounded-lg border border-zinc-200 px-4 py-2.5 text-sm outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20 dark:border-zinc-700 dark:bg-zinc-800"
                     value={editName}
@@ -239,6 +242,7 @@ export default function SubjectDetailPage() {
                   <textarea
                     rows={2}
                     placeholder="Leírás (opcionális)"
+                    aria-label="Leírás"
                     className="rounded-lg border border-zinc-200 px-4 py-2.5 text-sm outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20 dark:border-zinc-700 dark:bg-zinc-800"
                     value={editDesc}
                     onChange={(e) => setEditDesc(e.target.value)}

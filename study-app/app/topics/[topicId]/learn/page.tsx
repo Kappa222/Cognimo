@@ -169,11 +169,11 @@ export default function LearnPage() {
         <button onClick={handleBack} className="inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-accent">← Vissza</button>
         <h1 className="mb-3 mt-2 text-lg font-bold tracking-tight">{topic.name}</h1>
         {phase.isStarted && !phase.isComplete && (
-          <div className="flex items-center gap-3">
-            <div className="flex-1">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="min-w-40 flex-1">
               <ProgressBar current={Math.min(phase.currentCheckpoint, phase.totalCheckpoints)} total={phase.totalCheckpoints} />
             </div>
-            <span className="whitespace-nowrap rounded-full bg-zinc-100 px-3 py-1 text-xs font-medium text-zinc-500 dark:bg-zinc-800">
+            <span className="rounded-full bg-zinc-100 px-3 py-1 text-xs font-medium text-zinc-500 dark:bg-zinc-800">
               {isReview ? "🔁 Ismétlés — " : ""}
               {islandStep === "assess" || islandStep === "remediation"
                 ? `Tanítsd Lumit — ${phase.phaseBadge}`
@@ -288,7 +288,7 @@ export default function LearnPage() {
                   Értem, tovább →
                 </button>
               )}
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <button
                   onClick={() => handleTeachIntent("example")}
                   className="flex-1 cursor-pointer rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm text-zinc-600 transition-all duration-200 hover:-translate-y-0.5 hover:bg-zinc-50 active:scale-[0.98] dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"

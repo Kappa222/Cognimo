@@ -121,10 +121,14 @@ export default function SettingsPage() {
           <h2 className="mb-4 text-lg font-semibold">Profil</h2>
           <div className="flex flex-col gap-4">
             <div>
-              <label className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400">
+              <label
+                htmlFor="settings-username"
+                className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
+              >
                 Felhasználónév
               </label>
               <input
+                id="settings-username"
                 type="text"
                 required
                 className="w-full rounded-lg border border-zinc-200 px-4 py-2.5 text-sm outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20 dark:border-zinc-700 dark:bg-zinc-800"
@@ -143,6 +147,8 @@ export default function SettingsPage() {
                 key={avatar.value}
                 type="button"
                 onClick={() => setSelectedAvatar(avatar.value)}
+                aria-label={avatar.value.includes("female") ? "Női avatar" : "Férfi avatar"}
+                aria-pressed={selectedAvatar === avatar.value}
                 className={`rounded-2xl border-2 p-6 transition-all duration-200 flex items-center justify-center ${
                   selectedAvatar === avatar.value
                     ? "border-accent bg-violet-50 dark:bg-violet-950/30"

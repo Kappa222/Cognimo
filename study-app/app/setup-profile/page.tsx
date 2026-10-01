@@ -66,6 +66,7 @@ export default function SetupProfilePage() {
           <input
             type="text"
             placeholder="Felhasználónév"
+            aria-label="Felhasználónév"
             required
             className="rounded-lg border border-zinc-200 px-4 py-2.5 text-sm outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20 dark:border-zinc-700 dark:bg-zinc-800 dark:focus:ring-accent/30"
             value={username}
@@ -82,6 +83,8 @@ export default function SetupProfilePage() {
                   key={avatar.value}
                   type="button"
                   onClick={() => setSelectedAvatar(avatar.value)}
+                  aria-label={avatar.value.includes("female") ? "Női avatar" : "Férfi avatar"}
+                  aria-pressed={selectedAvatar === avatar.value}
                   className={`rounded-2xl border-2 p-6 transition-all duration-200 flex items-center justify-center ${
                     selectedAvatar === avatar.value
                       ? "border-accent bg-violet-50 dark:bg-violet-950/30"

@@ -420,6 +420,7 @@ export default function MaterialsPage() {
             <input
               type="text"
               placeholder="Cím"
+              aria-label="Tananyag címe"
               required
               className="rounded-lg border border-zinc-200 px-4 py-2.5 text-sm outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20 dark:border-zinc-700 dark:bg-zinc-800"
               value={title}
@@ -427,6 +428,7 @@ export default function MaterialsPage() {
             />
             <textarea
               placeholder="Illeszd be a tananyag szövegét..."
+              aria-label="Tananyag szövege"
               rows={8}
               required
               className="rounded-lg border border-zinc-200 px-4 py-2.5 text-sm outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20 dark:border-zinc-700 dark:bg-zinc-800"
