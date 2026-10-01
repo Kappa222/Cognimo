@@ -274,7 +274,7 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 | Loading skeletons | All data-fetching pages | `LoadingSkeleton.tsx` (Dashboard, Subject, Topic, Materials, Learn, Settings, Statistics) | ✅ |
 | Error boundaries | App root + per-page | Root `app/error.tsx` in place; per-route `error.tsx` files still missing | 🟡 |
 | Mobile responsive | All pages | 320px–1920px audit, fix breakpoints, adjust layouts | ❌ |
-| Keyboard a11y | All pages | Focus rings, tab order, aria labels on all interactive elements | ❌ |
+| Keyboard a11y | All pages | Skip link + `<main>` landmark (F42), aria-labels on icon-only/placeholder inputs, `role=tab` + focus-visible rings on tabs | 🟡 Partial |
 | Character library | Settings or new page | Browse future personas (beyond Lumi) | ❌ |
 
 ---
@@ -328,7 +328,7 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 - Error boundaries: only root `app/error.tsx` — per-route `error.tsx` files not added
 - API/Supabase errors are intentionally generic to clients ("Internal server error") — real causes are only in server logs
 - Rate limiting (`lib/rate-limit.ts`) is in-memory per server instance — resets on restart, not shared across instances
-- Mobile responsiveness audit not done yet (Phase 4)
+- Mobile: static responsive audit done (F42) — no live cross-breakpoint device testing yet (Phase 4)
 - Account deletion requires `SUPABASE_SERVICE_ROLE_KEY` — missing key fails fast via `requireEnv` (logged server error, 500 to client)
 - `007_storage_cleanup.sql`'s pg_net trigger is dropped by `014_drop_storage_cleanup_trigger.sql` (pg_net unavailable on free plan) — storage files are deleted explicitly by `/api/materials/[id]` and `/api/account`
 
@@ -368,6 +368,8 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 32. **F38 — Migration 014:** dropped `trg_cleanup_storage_on_delete` + `cleanup_storage_on_delete()` + `app_secrets` (pg_net unavailable on free plan); storage cleanup now explicit in API routes.
 33. **F39 — Defense hardening:** security headers in `next.config.ts` (nosniff, X-Frame-Options DENY, Referrer-Policy, Permissions-Policy); bounded JSON bodies via `lib/http.ts` (1 MB → 413, streaming byte budget) on all 11 JSON routes + multipart size gate; `lib/env.ts` `requireEnv` fail-fast for GEMINI_API_KEY/Supabase vars; Supabase `error.message` never leaks to clients (generic Hungarian/English 500s, details in server logs).
 34. **F40 — Rate limiting:** `lib/rate-limit.ts` in-memory fixed-window, per-user, wired into all 7 AI-cost routes (`analyze` 10/h, `chat` 30/min, `evaluate` 30/min, island/topic quiz 10/h, both attempts 20/h) → 429 + `Retry-After`.
+35. **F41 — README sync:** architecture, routes, 15-table schema, Known Issues, and changelog items 27-34 brought current (dead routes removed, F28-F40 history added).
+36. **F42 — a11y + mobile pass:** skip link + `<main id="main-content">` in root layout; `aria-label`/`aria-pressed` on login/setup/settings/materials/subjects form fields and avatar toggles; `<label htmlFor>` wired in settings; `flex-wrap` on learn progress bar + quick-tap rows (long island titles no longer overflow on narrow screens).
 
 ## Getting Started
 
