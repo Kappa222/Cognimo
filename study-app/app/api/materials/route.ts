@@ -1,4 +1,5 @@
 import { requireUser } from "../../../lib/api-auth";
+import { readJsonBody, jsonBodyError, contentLengthTooLarge } from "../../../lib/http";
 import { NextResponse } from "next/server";
 import { PDFParse } from "pdf-parse";
 import { chunkText, MAX_PDF_BYTES, MAX_PDF_PAGES, MIN_READABLE_CHARS } from "../../../lib/chunks";
@@ -22,7 +23,10 @@ export async function GET(req: Request) {
   }
 
   const { data, error } = await query;
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    console.error("Materials query failed:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  }
   return NextResponse.json(data);
 }
 
@@ -34,6 +38,11 @@ export async function POST(req: Request) {
   const contentType = req.headers.get("content-type") || "";
 
   if (contentType.includes("multipart/form-data")) {
+    // Reject oversized uploads on the declared size, before the multipart
+    // body is parsed into memory.
+    if (contentLengthTooLarge(req, MAX_PDF_BYTES + 1024 * 1024)) {
+      return NextResponse.json({ error: "A PDF túl nagy (maximum 25 MB)" }, { status: 413 });
+    }
     const formData = await req.formData();
     const subjectId = formData.get("subject_id") as string;
     const topicId = formData.get("topic_id") as string;
@@ -162,9 +171,11 @@ export async function POST(req: Request) {
     return NextResponse.json({ material: data, warning }, { status: 201 });
   }
 
-  const { subject_id, topic_id, title, content } = await req.json();
+  const read = await readJsonBody(req);
+  if (!read.ok) return jsonBodyError(read.reason);
+  const { subject_id, topic_id, title, content } = read.body;
 
-  if (!subject_id || !topic_id || !title || !content) {
+  if (!subject_id || !topic_id || !title || typeof content !== "string" || !content) {
     return NextResponse.json({ error: "Hiányzó mezők" }, { status: 400 });
   }
 
@@ -181,7 +192,10 @@ export async function POST(req: Request) {
     .select()
     .single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    console.error("Material insert failed:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  }
 
   // Single chunk so per-island retrieval works uniformly for pasted text.
   try {

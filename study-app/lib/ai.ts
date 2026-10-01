@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
+import { requireEnv } from "./env";
 
 const MODEL = "gemini-3.5-flash";
 
@@ -15,7 +16,7 @@ let geminiClient: GoogleGenerativeAI | null = null;
 
 function getGeminiClient() {
   if (!geminiClient) {
-    geminiClient = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+    geminiClient = new GoogleGenerativeAI(requireEnv("GEMINI_API_KEY"));
   }
   return geminiClient;
 }

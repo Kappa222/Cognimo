@@ -1,4 +1,5 @@
 import { requireUser } from "../../../../lib/api-auth";
+import { readJsonBody, jsonBodyError } from "../../../../lib/http";
 import { getIslandContext } from "../../../../lib/chunks";
 import { planConcepts } from "../../../../lib/plan";
 import { generateQuizQuestions, type QuizItem } from "../../../../lib/quiz-gen";
@@ -38,12 +39,9 @@ export async function POST(req: Request) {
   if (!auth.ok) return auth.response;
   const { supabase, user } = auth;
 
-  let body: Record<string, unknown>;
-  try {
-    body = await req.json();
-  } catch {
-    return new Response("Invalid JSON", { status: 400 });
-  }
+  const read = await readJsonBody(req);
+  if (!read.ok) return jsonBodyError(read.reason);
+  const body = read.body;
   const { topicId } = body;
   if (typeof topicId !== "string" || !topicId) {
     return new Response("topicId required", { status: 400 });

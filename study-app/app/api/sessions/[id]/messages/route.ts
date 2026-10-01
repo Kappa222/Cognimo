@@ -1,4 +1,5 @@
 import { requireUser } from "../../../../../lib/api-auth";
+import { readJsonBody, jsonBodyError } from "../../../../../lib/http";
 import { NextResponse } from "next/server";
 
 export async function POST(
@@ -11,12 +12,9 @@ export async function POST(
 
   const { id } = await params;
 
-  let body: { role?: unknown; content?: unknown };
-  try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
-  }
+  const read = await readJsonBody(req);
+  if (!read.ok) return jsonBodyError(read.reason);
+  const body = read.body;
 
   const { role, content } = body;
 
@@ -65,6 +63,9 @@ export async function POST(
     .select()
     .single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    console.error("Message insert failed:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  }
   return NextResponse.json(data, { status: 201 });
 }

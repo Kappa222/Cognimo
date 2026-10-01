@@ -18,7 +18,10 @@ export async function GET(
     .eq("user_id", user.id)
     .single();
 
-  if (sessionError) return NextResponse.json({ error: sessionError.message }, { status: 404 });
+  if (sessionError) {
+    console.error("Session fetch failed:", sessionError);
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
   if (!session) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const { data: messages, error: messagesError } = await supabase
@@ -27,7 +30,10 @@ export async function GET(
     .eq("session_id", id)
     .order("created_at", { ascending: true });
 
-  if (messagesError) return NextResponse.json({ error: messagesError.message }, { status: 500 });
+  if (messagesError) {
+    console.error("Messages fetch failed:", messagesError);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  }
 
   return NextResponse.json({ session, messages });
 }

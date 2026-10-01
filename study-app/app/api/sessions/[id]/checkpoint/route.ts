@@ -1,4 +1,5 @@
 import { requireUser } from "../../../../../lib/api-auth";
+import { readJsonBody, jsonBodyError } from "../../../../../lib/http";
 import { NextResponse } from "next/server";
 
 export async function PUT(
@@ -10,17 +11,9 @@ export async function PUT(
   const { supabase, user } = auth;
 
   const { id } = await params;
-  let body: {
-    current_checkpoint?: unknown;
-    status?: unknown;
-    island_step?: unknown;
-    assess_state?: unknown;
-  };
-  try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
-  }
+  const read = await readJsonBody(req);
+  if (!read.ok) return jsonBodyError(read.reason);
+  const body = read.body;
 
   const { current_checkpoint, status, island_step, assess_state } = body;
 
@@ -85,6 +78,9 @@ export async function PUT(
     .select()
     .single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    console.error("Checkpoint save failed:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  }
   return NextResponse.json(data);
 }

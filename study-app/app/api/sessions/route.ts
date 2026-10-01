@@ -1,4 +1,5 @@
 import { requireUser } from "../../../lib/api-auth";
+import { readJsonBody, jsonBodyError } from "../../../lib/http";
 import { validatePlan } from "../../../lib/plan";
 import { NextResponse } from "next/server";
 
@@ -33,7 +34,8 @@ export async function GET(req: Request) {
     .single();
 
   if (error && error.code !== "PGRST116") {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error("Session query failed:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 
   return NextResponse.json(data ?? null);
@@ -44,12 +46,9 @@ export async function POST(req: Request) {
   if (!auth.ok) return auth.response;
   const { supabase, user } = auth;
 
-  let body: { topic_id?: unknown; subject_id?: unknown; plan?: unknown };
-  try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
-  }
+  const read = await readJsonBody(req);
+  if (!read.ok) return jsonBodyError(read.reason);
+  const body = read.body;
   const { topic_id, subject_id, plan } = body;
 
   if (typeof topic_id !== "string" || !topic_id || typeof subject_id !== "string" || !subject_id) {
@@ -108,6 +107,9 @@ export async function POST(req: Request) {
     .select()
     .single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    console.error("Session insert failed:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  }
   return NextResponse.json(data, { status: 201 });
 }

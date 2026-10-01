@@ -1,4 +1,5 @@
 import { requireUser } from "../../../../../lib/api-auth";
+import { readJsonBody, jsonBodyError } from "../../../../../lib/http";
 import {
   gradeAttempt,
   isCompleteAttempt,
@@ -18,12 +19,9 @@ export async function POST(req: Request) {
   if (!auth.ok) return auth.response;
   const { supabase, user } = auth;
 
-  let body: Record<string, unknown>;
-  try {
-    body = await req.json();
-  } catch {
-    return new Response("Invalid JSON", { status: 400 });
-  }
+  const read = await readJsonBody(req);
+  if (!read.ok) return jsonBodyError(read.reason);
+  const body = read.body;
   const { topicId, islandTitle, answers, teachingCorrect, teachingTotal, isReview } = body;
   if (
     typeof topicId !== "string" || !topicId ||
