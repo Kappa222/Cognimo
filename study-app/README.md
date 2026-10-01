@@ -35,7 +35,7 @@ The AI plays the persona of **Lumi** (meaning "light", from "lumen") — a frien
 | Topics | Per-user CRUD inside a subject |
 | AI output style | Streaming responses (real-time token output) |
 | Session storage | Cookies — so server-side code (proxy, API routes) can read auth state |
-| Learning flow | Island-based: AI analyzes materials → splits into logical sections (islands). Each island = bite-size teaching from zero (no greeting, 1 concept per Lumi message ≤4 sentences + 1 example, quick taps [Értem, tovább →] / [🧪 Példát kérek] / [🪶 Egyszerűbben] + free Q&A) → [Értem, jöhet a kikérdezés →] button handover on last concept → gentle Inverted Teacher probe (easy recap first) → mini-quiz (6 MCQ on island's key concepts). After each island, user returns to roadmap to start the next. Final island → completion screen |
+| Learning flow | Island-based: AI analyzes materials → splits into logical sections (islands). Each island = bite-size teaching from zero (no greeting, 1 concept per Lumi message ≤4 sentences + 1 example, quick taps [Értem, tovább →] / [🧪 Példát kérek] / [🪶 Egyszerűbben] + free Q&A) → [Értem, jöhet a kikérdezés →] button handover on last concept → gentle Inverted Teacher probe (easy recap first) → persisted mini-quiz (4 MCQ + 2 kifejtős; island score = 60% quiz + 40% teaching). After each island, user returns to roadmap to start the next. Final island → completion screen |
 | Checkpoints | Saved after island's mini-quiz completes (not during); quitting mid-island restarts that island from teaching |
 | Progress UI | Topic detail page — horizontal roadmap with N island circles (titles below, completed / current / locked). Learn page has `current/N` progress bar + current island title badge |
 | Card style | `rounded-2xl border-zinc-200/60 bg-white shadow-sm` with hover lift |
@@ -51,21 +51,33 @@ The AI plays the persona of **Lumi** (meaning "light", from "lumen") — a frien
 | Component structure | Functional components with TypeScript, explicit prop interfaces, no `any` |
 | Styling | Tailwind v4, `rounded-2xl border-zinc-200/60 bg-white shadow-sm` cards, `cursor-pointer` buttons with hover lift + click press |
 | Migration naming | `supabase/migrations/0XX_<description>.sql` — incrementing 3-digit prefix |
+| API security | `requireUser()` auth guard on every route, 1 MB JSON body cap (`lib/http.ts`), per-user rate limits on AI-cost routes (`lib/rate-limit.ts` → 429), security headers in `next.config.ts` |
 
 ### Directory Layout
 
 ```
 study-app/
 ├── app/
-│   ├── api/                       — Route handlers
-│   ├── components/                — Shared UI components (ConfirmModal, AIBubble, etc.)
-│   ├── topics/[topicId]/learn/    — Island-based learn page
+│   ├── api/                       — Route handlers (auth via requireUser, JSON bodies via lib/http)
+│   ├── components/                — Shared UI (ConfirmModal, AIBubble, QuizRunner, FinaleRunner, IslandScoreScreen, LoadingSkeleton, …)
+│   ├── lib/                       — Learn-flow modules (islands.ts, prompts.ts, stream.ts, teaching.ts, types.ts, useSessionPhaseManager.ts)
+│   ├── topics/[topicId]/learn/    — page.tsx + loadLearnContext.ts (resume loader), useIslandFlow.ts (state/handlers), useSessionSaves.ts
+│   ├── topics/[topicId]/analyze/  — island-analysis progress page ("Lumi elemzi a tananyagot")
 │   └── settings/                  — Profile editing + account deletion
 ├── lib/
-│   ├── ai.ts                      — Gemini client (completeJson, streamChat) — use this for all AI calls
+│   ├── ai.ts                      — Single memoized Gemini client (completeJson, streamChat) — use for ALL AI calls
+│   ├── api-auth.ts                — requireUser(): standard auth guard returning {supabase, user} or 401
 │   ├── chunks.ts                  — Text chunking + per-island retrieval (getIslandContext) for large documents
-│   └── supabase-server.ts         — createClient + getAdminClient (service-role)
-├── supabase/migrations/           — Numbered SQL files (0XX_*.sql)
+│   ├── env.ts                     — requireEnv(): fail-fast missing-secret checks (server-only)
+│   ├── http.ts                    — readJsonBody()/jsonBodyError(): bounded JSON reads (1 MB → 413/400)
+│   ├── plan.ts                    — validatePlan() + islandConcepts()/planConcepts() helpers
+│   ├── quiz-gen.ts                — Quiz generation + shared attempt grading (isValidSubmission, gradeAttempt, scoreAttempt)
+│   ├── rate-limit.ts              — rateLimit(): in-memory per-user fixed-window limiter (429 + Retry-After)
+│   ├── supabase-server.ts         — createClient + getAdminClient (service-role)
+│   └── supabase.ts                — Browser client (createBrowserClient)
+├── supabase/
+│   ├── migrations/                — Numbered SQL files (0XX_*.sql), 003–014
+│   └── schema.sql                 — Authoritative schema, kept in sync with migrations
 ├── public/avatars/                — SVG avatars
 └── components/                    — Shared UI components
 ```
@@ -86,13 +98,13 @@ Two main exports in `lib/ai.ts`:
 - **`completeJson(messages)`** — sends messages to Gemini, returns parsed JSON. Use for structured outputs (island analysis, evaluation, quiz content). Handles system message extraction, empty-contents fallback, `responseMimeType: "application/json"`.
 - **`streamChat(messages, systemPrompt)`** — returns a `ReadableStream` for real-time token output. Use for interactive chat.
 
-API routes that need custom Gemini config (different model params, no JSON mode) instantiate `GoogleGenerativeAI` directly — see `app/api/quiz/generate/route.ts`.
+Routes must never instantiate `GoogleGenerativeAI` directly — `lib/ai.ts` owns the single memoized client. Quiz generation and attempt grading live in `lib/quiz-gen.ts` (`completeJson` + `isValidSubmission` / `gradeAttempt` / `scoreAttempt`); the old `/api/quiz/generate` + `/api/quiz/grade` endpoints were removed in F32.
 
 Error handling: wrap `generateContent()` and `JSON.parse` in try/catch. Use `catch (e)` only when `e` is referenced in the handler body, otherwise use `catch { }` (no parameter).
 
 ## Database Schema
 
-10 tables:
+15 tables:
 
 | Table             | Key Relationships                                                | Notes                                                               |
 | ----------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------- |
@@ -102,11 +114,15 @@ Error handling: wrap `generateContent()` and `JSON.parse` in try/catch. Use `cat
 | `study_materials` | user_id → profiles, topic_id → topics                            | PDF (Supabase Storage) or text input                                |
 | `material_chunks` | material_id → study_materials                                    | Overlapping text slices for per-island retrieval on large documents |
 | `characters`      | —                                                                | Global (Lumi seeded, Hungarian description)                         |
-| `chat_sessions`   | user_id → profiles, topic_id → topics                            | Tracks `status`, `current_checkpoint`, `total_checkpoints`; resumable |
-| `chat_messages`   | session_id → chat_sessions                                       | role check (user/assistant)                                         |
-| `quiz_questions`  | user_id → profiles, subject_id → subjects                        | AI-generated                                                        |
-| `quiz_attempts`   | user_id → profiles, topic_id → topics                            | Score tracking per topic                                             |
-| `progress_log`    | user_id → profiles                                               | Daily unique per user                                               |
+| `chat_sessions`   | user_id → profiles, topic_id → topics                            | `status`, `current_checkpoint`/`total_checkpoints`, `plan` (island list, 005), `island_step`, `assess_state` (006); resumable |
+| `chat_messages`   | session_id → chat_sessions                                       | role check (user/assistant); deduped by migration 013          |
+| `quiz_questions`  | user_id → profiles, subject_id → subjects, topic_id → topics     | AI-generated; `question_type` (mcq/typed), `reference_answer` (012) |
+| `quiz_attempts`   | user_id → profiles, topic_id → topics                            | Finale attempts: `answers`, `teaching_score`, `blended` (012)  |
+| `progress_log`    | user_id → profiles                                               | Daily unique per user                                           |
+| `island_quizzes`  | user_id → profiles, topic_id → topics                            | Generated-once island quiz (4 MCQ + 2 typed); unique per user/topic/island (011) |
+| `island_quiz_attempts` | user_id → profiles, topic_id → topics                        | Per-visit scores: quiz/teaching pct + blended, per-answer detail (011) |
+| `concept_mastery` | user_id → profiles, topic_id → topics                            | Per-concept status (shaky/solid/mastered) — weakest-first finale focus |
+| `assessment_rounds` | session_id → chat_sessions, topic_id → topics                  | Finale/assessment Q&A rounds: question, answer, verdicts, remediation flag |
 
 All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `set_user_id()` function.
 
@@ -143,7 +159,7 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 
 | UI | Route | Screens & Components | Status |
 |---|---|---|---|
-| Learn page | `/topics/[topicId]/learn` | Interactive lesson player — AI streams explanations, runs Inverted Teacher Q&A, probes during Reverse Teaching, and administers a scored quiz. See design below | ✅ Built with real session flow |
+| Learn page | `/topics/[topicId]/learn` | Interactive lesson player — bite-size teaching, Inverted Teacher probe, persisted island quiz with blended score, gated finale. See design below | ✅ Built with real session flow |
 | Session API | `/api/sessions` | Create, resume, checkpoint save, complete | ✅ Built |
 | Session messages API | `/api/sessions/[id]/messages` | List messages, create | ✅ Built |
 | Chat API update | `/api/chat` | Enhanced with session context, study materials as system prompt | ✅ Done |
@@ -177,7 +193,7 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 │  │  ✏️ Írd a válaszod...               [Küldés]   │   │
 │  └──────────────────────────────────────────────────┘   │
 │                                                          │
-│  [MINI-QUIZ — 6 MCQ on island's key_concepts]           │
+│  [MINI-QUIZ — 4 MCQ + 2 kifejtős, persisted]           │
 │  ┌── Kvíz ────────────────────────────────────────┐   │
 │  │  Mi volt a versailles-i békeszerződés...?     │   │
 │  │  ○ opció A  ○ opció B                         │   │
@@ -205,7 +221,7 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 |---|---|---|
 | Teach | Lumi teaches 1 concept/message (≤4 sentences, 1 example, prompt-only brevity with complete-sentence guard). Free Q&A + quick taps [Értem, tovább →] / [🧪 Példát kérek] / [🪶 Egyszerűbben] | [Értem, tovább →] per concept, [Értem, jöhet a kikérdezés →] on last → Probe |
 | Probe | AI uses Inverted Teacher (acts confused, gentle recap question first, then probe_questions) | User answers → advances to Mini-quiz |
-| Mini-quiz | 6 MCQ — select → [Ellenőrzés] → feedback → [Következő] | **Manual** — two clicks per question. Last question → save checkpoint → redirect to roadmap (or completion if final island) |
+| Mini-quiz | 4 MCQ + 2 kifejtős (generated once, identical on redo) — select → [Ellenőrzés] → feedback → [Következő] | **Manual** — two clicks per MCQ. Last question → blended score screen → save checkpoint → redirect to roadmap (or 🏁 finale if final island) |
 
 #### Tasks Breakdown
 
@@ -217,14 +233,14 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 | | `AIBubble` — AI message card with avatar + name + streaming text (token-by-token) | ✅ |
 | | `UserBubble` — user response card with text | ✅ |
 | | `ResponseInput` — text input + Küldés button, disabled during AI stream | ✅ |
-| | `QuizQuestion` — MCQ with 4 option buttons, feedback (✅/❌), [Következő] button | ✅ |
-| | `CompletionScreen` — congratulations card with stats, XP, [Újratanulás] + [Vissza] buttons | ✅ |
+| | `QuizQuestion` — MCQ card (built in 4a, removed in F32 — quiz rendering now lives in `QuizRunner`) | ✅ |
+| | `CompletionScreen` — (built in 4a, removed in F32 — island results via `IslandScoreScreen`) | ✅ |
 | | `ProgressBar` — simple fraction bar at top (e.g. "2/5") | ✅ |
 | **4b — Island phase manager** | `useSessionPhaseManager` hook — dynamic structure from island titles, resume support, phase badge shows current island title | ✅ |
 | **4c — Roadmap wiring** | Wire `ProgressRoadmap` to real session.checkpoint, show island titles below circles, "Kezdés"/"Folytatás" Link navigates to learn page | ✅ |
 | **4d — Session lifecycle** | API routes: create session, save checkpoints, resume existing session. Checkpoint saved after island's mini-quiz completed | ✅ |
 | **4e — AI context wiring** | Inject study materials + Lumi persona as system prompt via Gemini 3.5 Flash. Per-island phase instruction includes approach guide + key_concepts | ✅ |
-| **4f — Mini-quiz scoped generation** | `/api/quiz/generate` accepts `keyConcepts` + `questionCount` for island-scoped 6-question mini-quizzes | ✅ |
+| **4f — Mini-quiz scoped generation** | `/api/quiz/generate` accepts `keyConcepts` + `questionCount` for island-scoped 6-question mini-quizzes (route removed in F32 — scoped generation now in `lib/quiz-gen.ts`) | ✅ |
 
 ---
 
@@ -255,8 +271,8 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 | Streak indicator | Dashboard header | Fire emoji + "N napos sorozat" badge | ❌ |
 | XP / Level display | Dashboard header | XP progress bar + level number | ❌ |
 | Achievements / badges | Dashboard or `/settings` | Badge gallery with earned/locked states | ❌ |
-| Loading skeletons | All data-fetching pages | Replace spinners with skeleton placeholders | ❌ |
-| Error boundaries | App root + per-page | Fallback UI: "Valami hiba történt" + [Újra] | ❌ |
+| Loading skeletons | All data-fetching pages | `LoadingSkeleton.tsx` (Dashboard, Subject, Topic, Materials, Learn, Settings, Statistics) | ✅ |
+| Error boundaries | App root + per-page | Root `app/error.tsx` in place; per-route `error.tsx` files still missing | 🟡 |
 | Mobile responsive | All pages | 320px–1920px audit, fix breakpoints, adjust layouts | ❌ |
 | Keyboard a11y | All pages | Focus rings, tab order, aria labels on all interactive elements | ❌ |
 | Character library | Settings or new page | Browse future personas (beyond Lumi) | ❌ |
@@ -284,11 +300,13 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 | `/subjects/[id]`              | ✅     | Subject detail with topic CRUD                                |
 | `/topics/[topicId]`           | ✅     | Topic detail (Tanulj / Kvíz / Statisztika tabs)               |
 | `/topics/[topicId]/materials` | ✅     | Study materials (text + PDF upload)                           |
-| `/topics/[topicId]/learn`     | ✅     | Phase 2 — Interactive lesson player (AI explains → Inverted Teacher → Reverse Teaching → Quiz → Results, real session flow) |
+| `/topics/[topicId]/analyze`   | ✅     | Island-analysis progress page — runs `/api/analyze`, then → learn |
+| `/topics/[topicId]/learn`     | ✅     | Phase 2 — Island lesson player (bite-size teach → inverted probe → island quiz → blended score; `?finale=1` comprehensive finale) |
 | `/topics/[topicId]/quiz`      | ❌     | Phase 3 — Standalone quiz (MCQ with instant feedback, score summary) |
 | `/settings`                   | ✅     | Profile editing, persona change, logout                       |
 | `/api/account`                | ✅     | DELETE — removes user's Storage files then auth user (cascade deletes all data). Requires `SUPABASE_SERVICE_ROLE_KEY` |
 | `/api/analyze`                | ✅     | POST — analyzes materials via Gemini 3.5 Flash, returns `Island[]` (title, approach, key_concepts, probe_questions) |
+| `/api/evaluate`               | ✅     | POST — AI verdicts for probe/teaching answers per concept (`correct|partial|wrong|missing|not_required`), updates `concept_mastery` |
 | `/api/chat`                   | ✅     | Gemini streaming with session context + study materials |
 | `/api/sessions`               | ✅     | POST (create) + GET ?topic_id= (find latest in-progress)      |
 | `/api/sessions/[id]`          | ✅     | GET (session + messages)                                       |
@@ -296,23 +314,23 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 | `/api/sessions/[id]/messages` | ✅     | POST (save message)                                            |
 | `/api/materials`              | ✅     | GET (list by topic) + POST (text JSON or PDF FormData)        |
 | `/api/materials/[id]`         | ✅     | DELETE material + storage file                                |
-| `/api/quiz/generate`          | ✅     | POST — generates MCQ quiz. Accepts `keyConcepts` + `questionCount` for scoped mini-quizzes |
-| `/api/quiz/grade`             | ✅     | POST — AI judge for typed answers (`question`, `referenceAnswer`, `userAnswer`) |
 | `/api/islands/quiz`           | ✅     | POST — get-or-create persisted island quiz (4 MCQ + 2 typed, identical on redo) |
 | `/api/islands/quiz/attempt`   | ✅     | POST — grades + blends (60% quiz / 40% teaching), stores attempt with breakdown |
 | `/api/topic/quiz`             | ✅     | POST — get-or-create persisted finale quiz (6 MCQ + 4 typed across all islands) |
 | `/api/topic/quiz/attempt`     | ✅     | POST — grades finale, stores attempt, returns breakdown |
-| `/api/topics`                 | ✅     | GET (list by subject) + POST (create) + PUT (edit) + DELETE   |
+
+(removed in F32: `/api/quiz/generate`, `/api/quiz/grade`, `/api/topics`, `/api/subjects` — topic/subject CRUD runs client-side via Supabase; quiz generation/grading is in-process)
 
 ## Known Issues
 
-- Kvíz tab on topic detail page is a placeholder ("Hamarosan elérhető...")
+- Kvíz tab on topic detail page is a placeholder ("Hamarosan elérhető...") — deliberately deferred
 - Statisztika tab shows mastery, island scores, knowledge gaps, and finale score (session-time stats still basic)
-- No error boundaries — API failures show raw errors or silent fails
-- No loading skeletons — spinner-only loading states
-- No mobile responsiveness audit done yet
-- Account deletion requires `SUPABASE_SERVICE_ROLE_KEY` in `.env.local` — missing key returns 500
-- `supabase/migrations/007_storage_cleanup.sql` requires `pg_net` extension enabled in Supabase project (not available on free plan's Database Webhook)
+- Error boundaries: only root `app/error.tsx` — per-route `error.tsx` files not added
+- API/Supabase errors are intentionally generic to clients ("Internal server error") — real causes are only in server logs
+- Rate limiting (`lib/rate-limit.ts`) is in-memory per server instance — resets on restart, not shared across instances
+- Mobile responsiveness audit not done yet (Phase 4)
+- Account deletion requires `SUPABASE_SERVICE_ROLE_KEY` — missing key fails fast via `requireEnv` (logged server error, 500 to client)
+- `007_storage_cleanup.sql`'s pg_net trigger is dropped by `014_drop_storage_cleanup_trigger.sql` (pg_net unavailable on free plan) — storage files are deleted explicitly by `/api/materials/[id]` and `/api/account`
 
 ## Migration History
 
@@ -342,6 +360,14 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 24. **Teach-first handover:** island teach is now direct systematic explanation from zero (no greeting, key_concepts in order, socratic redefined to explain-first in `/api/analyze`). Multi-turn free Q&A via `Kérdezz bátran...` input; explicit `[Értem, jöhet a kikérdezés →]` button enters the gentle inverted probe (easy recap first). `teachRound` tracked locally + in `assess_state`; no migration.
 25. **Bite-size teaching:** one concept per Lumi message (≤4 sentences, ~500 chars, 1 example; prompt-only brevity with complete-sentence guard — no token cap, caps caused mid-sentence cuts). Quick taps `[Értem, tovább →]` (silent advance) / `[🧪 Példát kérek]` / `[🪶 Egyszerűbben]` (same-concept re-explain) + free-text Q&A. `teachConceptIndex` persisted in `assess_state`; handover button appears on last concept. No migration.
 26. **Double-stream fix + dedupe:** `streamAIResponse` retry loop never exited after success, so every Lumi turn was streamed, saved and rendered twice. Fixed with return-on-success + `streamingRef` in-flight guard (+ read-time collapse of consecutive identical messages on load). Migration `013_dedupe_chat_messages.sql` physically deletes the duplicate `chat_messages` rows (per-session `lag()` over `(created_at, id)`, keeps earliest; idempotent).
+27. **F28-F31 — Finale/quiz robustness:** `FinaleRunner` `historyRef` + `markCompleted()` retry with stage-aware retry banner; attempt routes skip attempt-insert when client sends `isReview` (redo never touches progress); `schema.sql` synced with migrations 003-013; sub-phase timer leak fixed (`scheduleAiResponding()` inside `streamAIResponse`); empty AI response throws early (no silent blank turns).
+28. **F32 — Dead code removal (−563 lines):** deleted unused routes `/api/quiz/generate`, `/api/quiz/grade`, `/api/topics`, `/api/subjects` and components `QuizQuestion`, `CompletionScreen`; trimmed `useSessionPhaseManager`/`QuizRunner` accordingly.
+29. **F33 — Shared AI modules:** `app/lib/stream.ts` (`streamAIResponse` retry/stream/save loop), `app/lib/teaching.ts` (teach/probe response builders), `app/lib/prompts.ts` — single source for Lumi prompt text.
+30. **F34-F36 — Learn page decomposition:** `loadLearnContext.ts` (resume/restore loader, discriminated result), `useSessionSaves.ts`, `useIslandFlow.ts` (all state + handlers/effects); page reduced 1088 → 378 lines (load layer + JSX only).
+31. **F37 — API auth/dedupe hardening:** `lib/api-auth.ts` `requireUser()` standardizes auth in all 14 routes (uniform 401 JSON), `lib/plan.ts` `validatePlan` guards quiz routes, single memoized Gemini client (`lib/ai.ts`), shared attempt grading (`lib/quiz-gen.ts`), `buildSystemPrompt` takes the request's client (second client removed).
+32. **F38 — Migration 014:** dropped `trg_cleanup_storage_on_delete` + `cleanup_storage_on_delete()` + `app_secrets` (pg_net unavailable on free plan); storage cleanup now explicit in API routes.
+33. **F39 — Defense hardening:** security headers in `next.config.ts` (nosniff, X-Frame-Options DENY, Referrer-Policy, Permissions-Policy); bounded JSON bodies via `lib/http.ts` (1 MB → 413, streaming byte budget) on all 11 JSON routes + multipart size gate; `lib/env.ts` `requireEnv` fail-fast for GEMINI_API_KEY/Supabase vars; Supabase `error.message` never leaks to clients (generic Hungarian/English 500s, details in server logs).
+34. **F40 — Rate limiting:** `lib/rate-limit.ts` in-memory fixed-window, per-user, wired into all 7 AI-cost routes (`analyze` 10/h, `chat` 30/min, `evaluate` 30/min, island/topic quiz 10/h, both attempts 20/h) → 429 + `Retry-After`.
 
 ## Getting Started
 
@@ -387,7 +413,7 @@ Finale (gated): last island done → roadmap unlocks 🏁 node → `/learn?final
 ### API contracts
 
 - `POST /api/islands/quiz {topicId, islandTitle}` — get-or-create: stored questions or generate-once (scoped generator + typed support) → store → return. Identical on every later call.
-- `POST /api/quiz/grade {question, referenceAnswer, userAnswer}` — typed-answer judge → `{verdict: correct|partial|wrong, explanation}` (Hungarian).
+- Typed-answer judging runs in-process via `lib/quiz-gen.ts` (`gradeAttempt` → `correct|partial|wrong` + Hungarian explanation) — the old `POST /api/quiz/grade` endpoint was removed in F32.
 - `POST /api/islands/quiz/attempt` — server-grades MCQ by `correctIndex`, typed via grade endpoint, blends with client-sent teaching counts, inserts attempt, returns breakdown.
 - `POST /api/topic/quiz` + attempt — same pattern for the persisted finale quiz.
 
@@ -399,7 +425,7 @@ Finale (gated): last island done → roadmap unlocks 🏁 node → `/learn?final
 
 ### Files
 
-New: `011_island_quizzes.sql`, `012_quiz_type_columns.sql`, `app/api/islands/quiz/route.ts`, `app/api/islands/quiz/attempt/route.ts`, `app/api/quiz/grade/route.ts`, `app/api/topic/quiz/route.ts`, `app/components/TypedQuestion.tsx`, `app/components/IslandScoreScreen.tsx`. Modified: `schema.sql`, quiz scoped generator (typed support), learn page + `useSessionPhaseManager`, `ProgressRoadmap`, `StatisticsTab`, topic page.
+New: `011_island_quizzes.sql`, `012_quiz_type_columns.sql`, `app/api/islands/quiz/route.ts`, `app/api/islands/quiz/attempt/route.ts`, `app/api/topic/quiz/route.ts`, `app/components/TypedQuestion.tsx`, `app/components/IslandScoreScreen.tsx` (`app/api/quiz/grade/route.ts` built here but removed in F32). Modified: `schema.sql`, quiz scoped generator (typed support), learn page + `useSessionPhaseManager`, `ProgressRoadmap`, `StatisticsTab`, topic page.
 
 ### Verification
 
