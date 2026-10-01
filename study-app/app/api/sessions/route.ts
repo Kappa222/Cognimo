@@ -1,10 +1,11 @@
-import { createClient } from "../../../lib/supabase-server";
+import { requireUser } from "../../../lib/api-auth";
+import { validatePlan } from "../../../lib/plan";
 import { NextResponse } from "next/server";
 
 export async function GET(req: Request) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const auth = await requireUser();
+  if (!auth.ok) return auth.response;
+  const { supabase, user } = auth;
 
   const { searchParams } = new URL(req.url);
   const topicId = searchParams.get("topic_id");
@@ -39,9 +40,9 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const auth = await requireUser();
+  if (!auth.ok) return auth.response;
+  const { supabase, user } = auth;
 
   let body: { topic_id?: unknown; subject_id?: unknown; plan?: unknown };
   try {
@@ -70,20 +71,12 @@ export async function POST(req: Request) {
   let totalCheckpoints = 7;
   let safePlan: unknown = null;
   if (plan !== undefined) {
-    if (!Array.isArray(plan) || plan.length === 0 || plan.length > 50) {
+    const checked = validatePlan(plan);
+    if (!checked) {
       return NextResponse.json({ error: "Invalid plan" }, { status: 400 });
     }
-    for (const island of plan) {
-      if (
-        !island || typeof island !== "object" ||
-        typeof (island as { title?: unknown }).title !== "string" ||
-        !Array.isArray((island as { key_concepts?: unknown }).key_concepts)
-      ) {
-        return NextResponse.json({ error: "Invalid plan" }, { status: 400 });
-      }
-    }
-    totalCheckpoints = plan.length;
-    safePlan = plan;
+    totalCheckpoints = checked.length;
+    safePlan = checked;
   }
 
   // One in-progress session per topic: abandon stale ones so resume never

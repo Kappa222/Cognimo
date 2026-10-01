@@ -1,12 +1,12 @@
-import { createClient } from "../../../lib/supabase-server";
+import { requireUser } from "../../../lib/api-auth";
 import { NextResponse } from "next/server";
 import { PDFParse } from "pdf-parse";
 import { chunkText, MAX_PDF_BYTES, MAX_PDF_PAGES, MIN_READABLE_CHARS } from "../../../lib/chunks";
 
 export async function GET(req: Request) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const auth = await requireUser();
+  if (!auth.ok) return auth.response;
+  const { supabase, user } = auth;
 
   const { searchParams } = new URL(req.url);
   const topicId = searchParams.get("topic_id");
@@ -27,9 +27,9 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const auth = await requireUser();
+  if (!auth.ok) return auth.response;
+  const { supabase, user } = auth;
 
   const contentType = req.headers.get("content-type") || "";
 

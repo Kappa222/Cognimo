@@ -1,4 +1,5 @@
-import { createClient } from "../../../lib/supabase-server";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { requireUser } from "../../../lib/api-auth";
 import { streamChat } from "../../../lib/ai";
 import { getIslandContext } from "../../../lib/chunks";
 
@@ -12,12 +13,11 @@ const MAX_HISTORY_MESSAGES = 40;
 const MAX_MESSAGE_CHARS = 10000;
 
 async function buildSystemPrompt(
+  supabase: SupabaseClient,
   userId: string,
   sessionId: string,
   islandTitle?: string,
 ): Promise<{ prompt: string; hasMaterials: boolean } | null> {
-  const supabase = await createClient();
-
   const parts: string[] = [LUMI_SYSTEM_PROMPT];
 
   // Ownership gate: only the session owner's rows are visible. A foreign
@@ -74,9 +74,9 @@ function isValidHistory(messages: unknown): messages is { role: string; content:
 }
 
 export async function POST(req: Request) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return new Response("Unauthorized", { status: 401 });
+  const auth = await requireUser();
+  if (!auth.ok) return auth.response;
+  const { supabase, user } = auth;
 
   let body: {
     sessionId?: unknown;
@@ -107,7 +107,7 @@ export async function POST(req: Request) {
       ? islandTitle.slice(0, MAX_ISLAND_TITLE_CHARS)
       : undefined;
 
-  const built = await buildSystemPrompt(user.id, sessionId, safeIslandTitle);
+  const built = await buildSystemPrompt(supabase, user.id, sessionId, safeIslandTitle);
   if (!built) return new Response("Session not found", { status: 404 });
 
   let systemPrompt = built.prompt;

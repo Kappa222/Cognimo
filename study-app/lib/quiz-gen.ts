@@ -1,18 +1,4 @@
-import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
 import { completeJson } from "./ai";
-
-const MODEL = "gemini-3.5-flash";
-
-const SAFETY_SETTINGS = [
-  { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-  { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-  { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-  { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-];
-
-function getGeminiClient() {
-  return new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-}
 
 export interface QuizItem {
   type: "mcq" | "typed";
@@ -136,26 +122,11 @@ export async function generateQuizQuestions(spec: GenerateSpec): Promise<QuizIte
       : "Tananyagrészlet most nem érhető el — általános, de a témához és a kulcsfogalmakhoz hű kérdéseket készíts.",
   ];
 
-  const genAI = getGeminiClient();
-  const model = genAI.getGenerativeModel({
-    model: MODEL,
-    safetySettings: SAFETY_SETTINGS,
-    generationConfig: { responseMimeType: "application/json" },
-  });
-
   let parsed: unknown;
   try {
-    const result = await model.generateContent({
-      contents: [{ role: "user", parts: [{ text: parts.join("\n\n") }] }],
-    });
-    let content: string;
-    try {
-      content = result.response.text();
-    } catch {
-      throw new Error("AI response blocked");
-    }
-    if (!content) throw new Error("Empty response");
-    parsed = JSON.parse(content);
+    // Single user message (prompt + topic + material), JSON mime via the
+    // shared completeJson helper — same wire format as the old direct call.
+    parsed = await completeJson([{ role: "user", content: parts.join("\n\n") }]);
   } catch (err) {
     console.error("Quiz generation error:", err);
     throw new Error("AI service unavailable");
@@ -221,5 +192,136 @@ export async function gradeTypedAnswer(
   return {
     verdict,
     explanation: typeof raw.explanation === "string" ? raw.explanation : "",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Shared attempt grading — used by both the island quiz and the finale quiz.
+// ---------------------------------------------------------------------------
+
+export const MAX_ANSWERS = 20;
+export const MAX_TYPED_CHARS = 5000;
+
+export interface SubmittedAnswer {
+  index: number;
+  mcqChoice: number | null;
+  typedText: string | null;
+}
+
+/** Shape check for one submitted answer (bounds included). */
+export function isValidSubmission(value: unknown): value is SubmittedAnswer {
+  if (!value || typeof value !== "object") return false;
+  const a = value as Record<string, unknown>;
+  if (typeof a.index !== "number" || !Number.isInteger(a.index) || a.index < 0) return false;
+  if (a.mcqChoice !== null && (typeof a.mcqChoice !== "number" || !Number.isInteger(a.mcqChoice))) {
+    return false;
+  }
+  if (a.typedText !== null && (typeof a.typedText !== "string" || a.typedText.length > MAX_TYPED_CHARS)) {
+    return false;
+  }
+  return true;
+}
+
+/** Every stored question answered exactly once — no cherry-picking. */
+export function isCompleteAttempt(questionCount: number, submitted: SubmittedAnswer[]): boolean {
+  const byIndex = new Map(submitted.map((a) => [a.index, a]));
+  return byIndex.size === questionCount && submitted.length === questionCount;
+}
+
+/** Question fields both attempt sources expose after loading stored rows. */
+export interface GradeableQuestion {
+  type: "mcq" | "typed";
+  text: string;
+  concept: string;
+  options?: string[] | null;
+  correctIndex?: number | null;
+  referenceAnswer?: string | null;
+}
+
+/**
+ * Grade an attempt: MCQs locally, typed answers via the AI judge in
+ * parallel. Throws when AI grading fails so callers return 503 without
+ * persisting a half-graded attempt.
+ */
+export async function gradeAttempt(
+  questions: GradeableQuestion[],
+  submitted: SubmittedAnswer[],
+): Promise<AttemptResult[]> {
+  const byIndex = new Map(submitted.map((a) => [a.index, a]));
+  const typedGrades = new Map<number, TypedGrade>();
+  await Promise.all(
+    questions.map(async (q, i) => {
+      if (q.type !== "typed") return;
+      const text = byIndex.get(i)?.typedText?.trim() ?? "";
+      if (!text || !q.referenceAnswer) {
+        typedGrades.set(i, { verdict: "wrong", explanation: "Üres válasz." });
+        return;
+      }
+      typedGrades.set(i, await gradeTypedAnswer(q.text, q.referenceAnswer, text));
+    }),
+  );
+
+  return questions.map((q, i) => {
+    const sub = byIndex.get(i);
+    if (q.type === "mcq") {
+      const correct = sub?.mcqChoice === q.correctIndex;
+      return {
+        index: i,
+        type: "mcq",
+        concept: q.concept,
+        points: correct ? 1 : 0,
+        maxPoints: 1,
+        verdict: correct ? "correct" : "wrong",
+        explanation: null,
+        correctIndex: q.correctIndex ?? null,
+        referenceAnswer: null,
+        userAnswer:
+          typeof sub?.mcqChoice === "number" && q.options
+            ? (q.options[sub.mcqChoice] ?? null)
+            : null,
+      };
+    }
+    const grade = typedGrades.get(i) ?? { verdict: "wrong" as const, explanation: "" };
+    return {
+      index: i,
+      type: "typed",
+      concept: q.concept,
+      points: grade.verdict === "correct" ? 1 : grade.verdict === "partial" ? 0.5 : 0,
+      maxPoints: 1,
+      verdict: grade.verdict,
+      explanation: grade.explanation || null,
+      correctIndex: null,
+      referenceAnswer: q.referenceAnswer ?? null,
+      userAnswer: sub?.typedText?.trim() || null,
+    };
+  });
+}
+
+export interface AttemptScores {
+  quizPct: number;
+  teachingPct: number;
+  blended: number;
+  correctCount: number;
+}
+
+/**
+ * Blended score: 60% quiz + 40% teaching. With no teaching evidence the
+ * quiz carries the whole weight (teachingPct falls back to quizPct).
+ */
+export function scoreAttempt(
+  results: AttemptResult[],
+  teachingCorrect: number,
+  teachingTotal: number,
+): AttemptScores {
+  const points = results.reduce((sum, r) => sum + r.points, 0);
+  const quizPct = Math.round((100 * points) / results.length);
+  const teachingPct =
+    teachingTotal > 0 ? Math.round((100 * teachingCorrect) / teachingTotal) : quizPct;
+  const blended = Math.round(0.6 * quizPct + 0.4 * teachingPct);
+  return {
+    quizPct,
+    teachingPct,
+    blended,
+    correctCount: results.filter((r) => r.verdict === "correct").length,
   };
 }

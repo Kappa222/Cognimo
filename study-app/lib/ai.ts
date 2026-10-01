@@ -9,8 +9,15 @@ const SAFETY_SETTINGS = [
   { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
 ];
 
+// One shared client for all AI calls (chat, evaluation, quiz generation,
+// grading) — constructing it per call would rebuild the transport every time.
+let geminiClient: GoogleGenerativeAI | null = null;
+
 function getGeminiClient() {
-  return new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+  if (!geminiClient) {
+    geminiClient = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+  }
+  return geminiClient;
 }
 
 function toGeminiMessages(

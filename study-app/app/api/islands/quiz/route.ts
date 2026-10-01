@@ -1,33 +1,16 @@
-import { createClient } from "../../../../lib/supabase-server";
-import { getIslandContext, normalizeTitle } from "../../../../lib/chunks";
+import { requireUser } from "../../../../lib/api-auth";
+import { getIslandContext } from "../../../../lib/chunks";
+import { islandConcepts } from "../../../../lib/plan";
 import { generateQuizQuestions, type QuizItem } from "../../../../lib/quiz-gen";
 
 const MCQ_COUNT = 4;
 const TYPED_COUNT = 2;
 const MAX_TITLE_CHARS = 200;
 
-interface PlanIsland {
-  title: string;
-  key_concepts?: unknown;
-}
-
-function islandConcepts(plan: unknown, islandTitle: string): string[] {
-  if (!Array.isArray(plan)) return [];
-  const wanted = normalizeTitle(islandTitle);
-  const island = (plan as PlanIsland[]).find(
-    (i) => i && typeof i.title === "string" && normalizeTitle(i.title) === wanted,
-  );
-  const concepts = island?.key_concepts;
-  if (!Array.isArray(concepts)) return [];
-  return (concepts as unknown[])
-    .filter((c): c is string => typeof c === "string" && c.trim().length > 0)
-    .map((c) => c.trim());
-}
-
 export async function POST(req: Request) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return new Response("Unauthorized", { status: 401 });
+  const auth = await requireUser();
+  if (!auth.ok) return auth.response;
+  const { supabase, user } = auth;
 
   let body: Record<string, unknown>;
   try {
