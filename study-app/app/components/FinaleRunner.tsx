@@ -7,6 +7,12 @@ import UserBubble from "./UserBubble";
 import ResponseInput from "./ResponseInput";
 import QuizRunner from "./QuizRunner";
 import IslandScoreScreen from "./IslandScoreScreen";
+import { readTextStream } from "../lib/stream";
+import {
+  accumulateTeachingVerdicts,
+  createTeachingTally,
+  teachingScore,
+} from "../lib/teaching";
 import type {
   EvaluateResult,
   QuizAttemptBreakdown,
@@ -54,7 +60,7 @@ export default function FinaleRunner({
 
   const lastQuestionRef = useRef("");
   const abortRef = useRef<AbortController | null>(null);
-  const teachingRef = useRef({ correct: 0, partial: 0, total: 0 });
+  const teachingRef = useRef(createTeachingTally());
   const contentEndRef = useRef<HTMLDivElement>(null);
   const sendingRef = useRef(false);
   // Chat history lives in a ref (never rendered): closures created earlier in
@@ -105,18 +111,8 @@ export default function FinaleRunner({
           signal: abortRef.current.signal,
         });
         if (!res.ok) throw new Error(`API error: ${res.status}`);
-        const reader = res.body?.getReader();
-        if (!reader) throw new Error("No reader");
-        const decoder = new TextDecoder();
-        let fullText = "";
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const chunk = decoder.decode(value, { stream: true });
-          fullText += chunk;
-          setStreamingText(fullText);
-        }
-        fullText += decoder.decode();
+        if (!res.body) throw new Error("No response body");
+        const fullText = await readTextStream(res.body, setStreamingText);
         setStreamingText("");
         if (!fullText.trim()) throw new Error("Empty response from AI");
         pushAssistant(fullText);
@@ -257,13 +253,7 @@ export default function FinaleRunner({
       if (!res.ok) throw new Error(`Evaluate error: ${res.status}`);
       const result: EvaluateResult = await res.json();
       if (Array.isArray(result.verdicts)) {
-        const visit = teachingRef.current;
-        for (const v of result.verdicts) {
-          if (v.verdict === "not_required") continue;
-          visit.total += 1;
-          if (v.verdict === "correct") visit.correct += 1;
-          else if (v.verdict === "partial") visit.partial += 1;
-        }
+        accumulateTeachingVerdicts(teachingRef.current, result.verdicts);
       }
       setAssessPhase("reacting");
       const hint = result.feedback_hint || "A felhasználó válaszolt a kérdésedre.";
@@ -320,7 +310,7 @@ export default function FinaleRunner({
   const submitFinaleQuiz = useCallback(
     async (answers: QuizSubmittedAnswer[]): Promise<QuizAttemptBreakdown> => {
       const visit = teachingRef.current;
-      const teachingCorrect = Math.round(visit.correct + 0.5 * visit.partial);
+      const teachingCorrect = teachingScore(visit);
       const res = await fetch("/api/topic/quiz/attempt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
