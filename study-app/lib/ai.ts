@@ -9,7 +9,9 @@ import {
 } from "@google/generative-ai";
 import { requireEnv } from "./env";
 
-const MODEL = "gemini-3.5-flash";
+// Free-tier pick (F49): 3.5 Flash-Lite carries the friendliest free quota in
+// new projects; override with GEMINI_MODEL (.env.local) to experiment.
+const MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 
 const SAFETY_SETTINGS = [
   { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },

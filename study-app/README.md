@@ -87,6 +87,7 @@ study-app/
 | Variable | Required for |
 |----------|-------------|
 | `GEMINI_API_KEY` | All AI features (island analysis, chat, quiz, evaluation) |
+| `GEMINI_MODEL` | Optional — overrides the Gemini model (default `gemini-3.5-flash-lite`, the free-tier pick from F49) |
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase client (public) |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase client (public) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Account deletion (`DELETE /api/account`) — get from Supabase Dashboard > Project Settings > API |
