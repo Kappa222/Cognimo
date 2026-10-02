@@ -332,7 +332,7 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 - Mobile: static responsive audit done (F42) — no live cross-breakpoint device testing yet (Phase 4)
 - Account deletion requires `SUPABASE_SERVICE_ROLE_KEY` — missing key fails fast via `requireEnv` (logged server error, 500 to client)
 - `007_storage_cleanup.sql`'s pg_net trigger is dropped by `014_drop_storage_cleanup_trigger.sql` (pg_net unavailable on free plan) — storage files are deleted explicitly by `/api/materials/[id]` and `/api/account`
-- AI failure root cause still unconfirmed (session 2026-10-02): symptoms were a masked blanket 503 and silent empty 200 streams. After deploying F44-F46, watch server logs for `[AI] fail op=... code=...` — repeated `ai_quota` (429) on the free-tier key means upgrading billing (decision pending, user to check aistudio.google.com usage); `ai_unavailable`/`ai_empty` without 429 points at Google overload instead
+- AI failure root cause **confirmed quota** (session 2026-10-02): project showed 5 RPM / 20 RPD on `gemini-3.5-flash` — a full learning session exceeds that easily. Decision: stay free → F49 swapped default to `gemini-3.5-flash-lite` (`GEMINI_MODEL` override), F48 stops auto-retrying 429s. Residual watch: if `[AI] fail code=ai_empty` appears after the swap, that's a separate non-quota bug to chase
 
 ## Migration History
 
@@ -375,6 +375,9 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 37. **F44 — Server AI error classification:** `lib/ai.ts` gained `AiError` + codes (`ai_quota`, `ai_unavailable`, `ai_empty`, `ai_blocked`, `ai_bad_json`, `ai_bad_response`, `ai_invalid`), `aiErrorResponse()` (JSON `{error, message, retryAfterSec}` + `Retry-After` header), structured `[AI] fail op=... code=...` log lines, a 30 s first-chunk gate on streams (empty 200 streams no longer reach the client), and `aiRetry()` server-side backoff (≤3 attempts, honors Retry-After ≤5 s); all 7 AI routes return classified errors instead of the old blanket 500/503; `/api/rate-limit` 429 now returns `{error:"rate_limit"}` JSON; `quiz-gen` generation/judging wrapped in `aiRetry`.
 38. **F45 — Client AI failure handling:** new `app/lib/aiErrors.ts` — `AiFailure` schema (code/status/Hungarian message/`HTTP 502 · ai_empty` hint), `aiFetch()` with bounded timeouts (60 s chat/evaluate, 120 s quizzes, 6 min analyze), `withAiRetry()` abortable class-aware backoff (jitter, Retry-After ≤10 s honored, never retries non-retryable codes, dies with the page on navigation); learn flow (`streamAIResponse`, evaluate, island quiz) rewired; inline chat/eval error panel now shows the hint line.
 39. **F46 — Finale + analyze hardening:** `FinaleRunner` chat/evaluate/quiz calls use `aiFetch` + `withAiRetry` with classified, hinted error banners (409 double-submit stays silent); analyze page fetch is classified and bounded by the existing 6-minute ring backstop.
+40. **F48 — Quota-preserving retries:** `aiRetry` throws `ai_quota` immediately unless Retry-After ≤5 s (no more blind 1 s/2.5 s retries burning the 20/day free budget); client removed `ai_quota` from `RETRYABLE_CODES` — the Hungarian quota panel shows on the first 429, manual "Újra" is the only retry.
+41. **F49 — Free-tier model pick:** default model `gemini-3.5-flash` (project quota 5 RPM / 20 RPD) → `gemini-3.5-flash-lite`, overridable via `GEMINI_MODEL` env; env table updated. Root cause of the "AI doesn't respond" reports: free-tier quota exhaustion.
+42. **F50 — README sync:** Known Issues updated with the confirmed quota root cause and stay-free decision; changelog entries 40-41 added.
 
 ## Getting Started
 
