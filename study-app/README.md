@@ -326,11 +326,12 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 - Kvíz tab on topic detail page is a placeholder ("Hamarosan elérhető...") — deliberately deferred
 - Statisztika tab shows mastery, island scores, knowledge gaps, and finale score (session-time stats still basic)
 - Error boundaries: only root `app/error.tsx` — per-route `error.tsx` files not added
-- API/Supabase errors are intentionally generic to clients ("Internal server error") — real causes are only in server logs
+- Supabase/internal errors are still generic to clients; AI failures now return coded Hungarian messages with a diagnostic hint (`HTTP 502 · ai_empty`, F44-F45) — full causes in server logs and `[AI] fail` lines
 - Rate limiting (`lib/rate-limit.ts`) is in-memory per server instance — resets on restart, not shared across instances
 - Mobile: static responsive audit done (F42) — no live cross-breakpoint device testing yet (Phase 4)
 - Account deletion requires `SUPABASE_SERVICE_ROLE_KEY` — missing key fails fast via `requireEnv` (logged server error, 500 to client)
 - `007_storage_cleanup.sql`'s pg_net trigger is dropped by `014_drop_storage_cleanup_trigger.sql` (pg_net unavailable on free plan) — storage files are deleted explicitly by `/api/materials/[id]` and `/api/account`
+- AI failure root cause still unconfirmed (session 2026-10-02): symptoms were a masked blanket 503 and silent empty 200 streams. After deploying F44-F46, watch server logs for `[AI] fail op=... code=...` — repeated `ai_quota` (429) on the free-tier key means upgrading billing (decision pending, user to check aistudio.google.com usage); `ai_unavailable`/`ai_empty` without 429 points at Google overload instead
 
 ## Migration History
 
@@ -370,6 +371,9 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 34. **F40 — Rate limiting:** `lib/rate-limit.ts` in-memory fixed-window, per-user, wired into all 7 AI-cost routes (`analyze` 10/h, `chat` 30/min, `evaluate` 30/min, island/topic quiz 10/h, both attempts 20/h) → 429 + `Retry-After`.
 35. **F41 — README sync:** architecture, routes, 15-table schema, Known Issues, and changelog items 27-34 brought current (dead routes removed, F28-F40 history added).
 36. **F42 — a11y + mobile pass:** skip link + `<main id="main-content">` in root layout; `aria-label`/`aria-pressed` on login/setup/settings/materials/subjects form fields and avatar toggles; `<label htmlFor>` wired in settings; `flex-wrap` on learn progress bar + quick-tap rows (long island titles no longer overflow on narrow screens).
+37. **F44 — Server AI error classification:** `lib/ai.ts` gained `AiError` + codes (`ai_quota`, `ai_unavailable`, `ai_empty`, `ai_blocked`, `ai_bad_json`, `ai_bad_response`, `ai_invalid`), `aiErrorResponse()` (JSON `{error, message, retryAfterSec}` + `Retry-After` header), structured `[AI] fail op=... code=...` log lines, a 30 s first-chunk gate on streams (empty 200 streams no longer reach the client), and `aiRetry()` server-side backoff (≤3 attempts, honors Retry-After ≤5 s); all 7 AI routes return classified errors instead of the old blanket 500/503; `/api/rate-limit` 429 now returns `{error:"rate_limit"}` JSON; `quiz-gen` generation/judging wrapped in `aiRetry`.
+38. **F45 — Client AI failure handling:** new `app/lib/aiErrors.ts` — `AiFailure` schema (code/status/Hungarian message/`HTTP 502 · ai_empty` hint), `aiFetch()` with bounded timeouts (60 s chat/evaluate, 120 s quizzes, 6 min analyze), `withAiRetry()` abortable class-aware backoff (jitter, Retry-After ≤10 s honored, never retries non-retryable codes, dies with the page on navigation); learn flow (`streamAIResponse`, evaluate, island quiz) rewired; inline chat/eval error panel now shows the hint line.
+39. **F46 — Finale + analyze hardening:** `FinaleRunner` chat/evaluate/quiz calls use `aiFetch` + `withAiRetry` with classified, hinted error banners (409 double-submit stays silent); analyze page fetch is classified and bounded by the existing 6-minute ring backstop.
 
 ## Getting Started
 
