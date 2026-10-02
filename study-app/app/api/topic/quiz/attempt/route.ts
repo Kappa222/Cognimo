@@ -1,6 +1,7 @@
 import { requireUser } from "../../../../../lib/api-auth";
 import { rateLimit } from "../../../../../lib/rate-limit";
 import { readJsonBody, jsonBodyError } from "../../../../../lib/http";
+import { aiErrorResponse } from "../../../../../lib/ai";
 import {
   gradeAttempt,
   isCompleteAttempt,
@@ -94,8 +95,8 @@ export async function POST(req: Request) {
       questions.map((q) => ({ ...q, concept: q.concept ?? "" })),
       submitted,
     );
-  } catch {
-    return new Response("AI service unavailable", { status: 503 });
+  } catch (err) {
+    return aiErrorResponse("topic-quiz-attempt", err);
   }
 
   const { quizPct, teachingPct, blended, correctCount } = scoreAttempt(

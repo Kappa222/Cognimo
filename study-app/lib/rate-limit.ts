@@ -43,10 +43,12 @@ export function rateLimit(key: string, limit: number, windowMs: number): Respons
   }
   if (bucket.count >= limit) {
     const retryAfter = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
-    return new Response("Too many requests", {
-      status: 429,
-      headers: { "Retry-After": String(retryAfter) },
-    });
+    // Same JSON shape as AI errors so clients parse one schema: the code
+    // distinguishes *our* limiter from a Gemini quota rejection.
+    return new Response(
+      JSON.stringify({ error: "rate_limit", message: "Too many requests", retryAfterSec: retryAfter }),
+      { status: 429, headers: { "Content-Type": "application/json", "Retry-After": String(retryAfter) } },
+    );
   }
   bucket.count += 1;
   return null;

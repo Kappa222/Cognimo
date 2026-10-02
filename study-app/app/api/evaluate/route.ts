@@ -1,7 +1,7 @@
 import { requireUser } from "../../../lib/api-auth";
 import { rateLimit } from "../../../lib/rate-limit";
 import { readJsonBody, jsonBodyError } from "../../../lib/http";
-import { completeJson } from "../../../lib/ai";
+import { completeJson, AiError, aiErrorResponse } from "../../../lib/ai";
 import { getIslandContext } from "../../../lib/chunks";
 
 const EVALUATE_SYSTEM_PROMPT = `Te egy szigorú, de igazságos szakmai értékelő vagy. A felhasználó egy "fordított tanár" gyakorlatban tanít: elmagyaráz valamit egy tanuló AI-nak. A feladatod: minősítsd a magyarázatot KIZÁRÓLAG a megadott kulcsfogalmak szempontjából.
@@ -195,7 +195,7 @@ export async function POST(req: Request) {
     evaluateResult = raw as EvaluateResponse;
 
     if (!evaluateResult.verdicts || !Array.isArray(evaluateResult.verdicts)) {
-      throw new Error("Invalid evaluate response format");
+      throw new AiError("ai_bad_response", 502, true, "Invalid evaluate response format");
     }
     // Keep only verdicts for known key concepts with valid labels, so a
     // hallucinated concept can't create stray mastery rows.
@@ -218,8 +218,7 @@ export async function POST(req: Request) {
         ? nextFocus
         : null;
   } catch (err) {
-    console.error("Evaluate AI error:", err);
-    return new Response("AI service unavailable", { status: 503 });
+    return aiErrorResponse("evaluate", err);
   }
 
   // Review replays record nothing — verdicts only steer the conversation.

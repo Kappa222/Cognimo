@@ -1,4 +1,4 @@
-import { completeJson } from "./ai";
+import { completeJson, AiError, aiRetry } from "./ai";
 
 export interface QuizItem {
   type: "mcq" | "typed";
@@ -97,7 +97,9 @@ export async function generateQuizQuestions(spec: GenerateSpec): Promise<QuizIte
   const { materialText, topicName, scopeLabel, keyConcepts, mcqCount, typedCount } = spec;
   const total = mcqCount + typedCount;
   const allowed = new Set(keyConcepts.map((c) => c.trim()).filter(Boolean));
-  if (allowed.size === 0 || total === 0) throw new Error("Invalid quiz spec");
+  if (allowed.size === 0 || total === 0) {
+    throw new AiError("ai_invalid", 500, false, "Invalid quiz spec");
+  }
 
   const systemPrompt =
     `Te vagy Lumi, egy barátságos tanulótárs. Készíts pontosan ${total} kvízkérdést magyar nyelven: ` +
@@ -122,34 +124,27 @@ export async function generateQuizQuestions(spec: GenerateSpec): Promise<QuizIte
       : "Tananyagrészlet most nem érhető el — általános, de a témához és a kulcsfogalmakhoz hű kérdéseket készíts.",
   ];
 
-  let parsed: unknown;
-  try {
-    // Single user message (prompt + topic + material), JSON mime via the
-    // shared completeJson helper — same wire format as the old direct call.
-    parsed = await completeJson([{ role: "user", content: parts.join("\n\n") }]);
-  } catch (err) {
-    console.error("Quiz generation error:", err);
-    throw new Error("AI service unavailable");
-  }
+  // Shared server-side retry (F44) covers both the AI call and unusable
+  // output: a fresh regeneration usually fixes a bad roll, and completeJson's
+  // inner retry stops via the exhausted flag instead of stacking calls.
+  return aiRetry("quiz:generate", async () => {
+    const parsed = await completeJson([{ role: "user", content: parts.join("\n\n") }]);
 
-  const rawQuestions = isRecord(parsed) && Array.isArray(parsed.questions) ? parsed.questions : [];
-  // Keep AI order but guarantee the requested type mix: take typed first,
-  // then MCQ (generators sometimes skew the mix).
-  const items = (rawQuestions as unknown[])
-    .map((q) => coerceItem(q, allowed))
-    .filter((q): q is QuizItem => q !== null);
-  const typed = items.filter((q) => q.type === "typed").slice(0, typedCount);
-  const mcq = items.filter((q) => q.type === "mcq").slice(0, mcqCount);
-  if (typed.length < typedCount || mcq.length < mcqCount) {
-    console.error("Quiz generation shortfall:", {
-      wantMcq: mcqCount,
-      wantTyped: typedCount,
-      gotMcq: mcq.length,
-      gotTyped: typed.length,
-    });
-    throw new Error("Incomplete quiz generated");
-  }
-  return [...mcq, ...typed];
+    const rawQuestions = isRecord(parsed) && Array.isArray(parsed.questions) ? parsed.questions : [];
+    // Keep AI order but guarantee the requested type mix: take typed first,
+    // then MCQ (generators sometimes skew the mix).
+    const items = (rawQuestions as unknown[])
+      .map((q) => coerceItem(q, allowed))
+      .filter((q): q is QuizItem => q !== null);
+    const typed = items.filter((q) => q.type === "typed").slice(0, typedCount);
+    const mcq = items.filter((q) => q.type === "mcq").slice(0, mcqCount);
+    if (typed.length < typedCount || mcq.length < mcqCount) {
+      throw new AiError("ai_bad_response", 502, true, "Incomplete quiz generated", {
+        detail: `want mcq=${mcqCount} typed=${typedCount} got mcq=${mcq.length} typed=${typed.length}`,
+      });
+    }
+    return [...mcq, ...typed];
+  });
 }
 
 const JUDGE_PROMPT =
@@ -176,23 +171,25 @@ export async function gradeTypedAnswer(
   const prompt = JUDGE_PROMPT.replace("{question}", question)
     .replace("{reference}", referenceAnswer)
     .replace("{answer}", userAnswer);
-  let raw: unknown;
-  try {
-    raw = await completeJson([{ role: "system", content: prompt }]);
-  } catch (err) {
-    console.error("Typed grading AI error:", err);
-    throw new Error("AI service unavailable");
-  }
-  if (!isRecord(raw)) throw new Error("Invalid grade response");
-  const verdict =
-    raw.verdict === "correct" || raw.verdict === "partial" || raw.verdict === "wrong"
-      ? raw.verdict
-      : null;
-  if (!verdict) throw new Error("Invalid grade response");
-  return {
-    verdict,
-    explanation: typeof raw.explanation === "string" ? raw.explanation : "",
-  };
+  // Retry both the AI call and a malformed verdict — the judge usually
+  // returns a valid verdict on a reroll (F44).
+  return aiRetry("quiz:judge", async () => {
+    const raw = await completeJson([{ role: "system", content: prompt }]);
+    if (!isRecord(raw)) {
+      throw new AiError("ai_bad_response", 502, true, "Invalid grade response");
+    }
+    const verdict =
+      raw.verdict === "correct" || raw.verdict === "partial" || raw.verdict === "wrong"
+        ? raw.verdict
+        : null;
+    if (!verdict) {
+      throw new AiError("ai_bad_response", 502, true, "Invalid grade response");
+    }
+    return {
+      verdict,
+      explanation: typeof raw.explanation === "string" ? raw.explanation : "",
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------

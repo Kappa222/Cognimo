@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { requireUser } from "../../../lib/api-auth";
 import { rateLimit } from "../../../lib/rate-limit";
 import { readJsonBody, jsonBodyError } from "../../../lib/http";
-import { streamChat } from "../../../lib/ai";
+import { streamChat, aiErrorResponse } from "../../../lib/ai";
 import { getIslandContext } from "../../../lib/chunks";
 
 const LUMI_SYSTEM_PROMPT =
@@ -118,7 +118,9 @@ export async function POST(req: Request) {
       headers: { "Content-Type": "text/plain" },
     });
   } catch (err) {
-    console.error("Chat stream error:", err);
-    return new Response("AI service unavailable", { status: 503 });
+    // Classified status + {error, message} instead of a blanket 503, so the
+    // client can distinguish quota / empty / unavailable and show a real
+    // Hungarian message (F44).
+    return aiErrorResponse("chat", err);
   }
 }

@@ -1,7 +1,7 @@
 import { requireUser } from "../../../lib/api-auth";
 import { rateLimit } from "../../../lib/rate-limit";
 import { readJsonBody, jsonBodyError } from "../../../lib/http";
-import { completeJson } from "../../../lib/ai";
+import { completeJson, AiError, aiErrorResponse } from "../../../lib/ai";
 import { chunkText, LARGE_CORPUS_THRESHOLD } from "../../../lib/chunks";
 
 const SYSTEM_PROMPT =
@@ -115,8 +115,7 @@ export async function POST(req: Request) {
       headers: { "Content-Type": "application/json" },
     });
   } catch (err) {
-    console.error("Analyze error:", err);
-    return new Response("AI service unavailable", { status: 503 });
+    return aiErrorResponse("analyze", err);
   }
 }
 
@@ -191,7 +190,7 @@ async function buildIslands(
     }
   }
   if (batchInfos.every((b) => !b.summary && !b.keywords)) {
-    throw new Error("All summarization batches failed");
+    throw new AiError("ai_bad_response", 502, true, "All summarization batches failed");
   }
 
   const parts: string[] = [SYSTEM_PROMPT];
@@ -261,7 +260,7 @@ function mapIslandsToChunks(
 function coerceIslands(parsed: unknown): IslandShape[] {
   const islands = (parsed as Record<string, unknown>).islands ?? [];
   if (!Array.isArray(islands) || islands.length === 0) {
-    throw new Error("No islands generated");
+    throw new AiError("ai_bad_response", 502, true, "No islands generated");
   }
   return (islands as Record<string, unknown>[]).map((i) => ({
     title: typeof i.title === "string" ? i.title : "Névtelen rész",

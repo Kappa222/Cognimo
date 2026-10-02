@@ -4,6 +4,7 @@ import { readJsonBody, jsonBodyError } from "../../../../lib/http";
 import { getIslandContext } from "../../../../lib/chunks";
 import { islandConcepts } from "../../../../lib/plan";
 import { generateQuizQuestions, type QuizItem } from "../../../../lib/quiz-gen";
+import { aiErrorResponse } from "../../../../lib/ai";
 
 const MCQ_COUNT = 4;
 const TYPED_COUNT = 2;
@@ -84,8 +85,8 @@ export async function POST(req: Request) {
       mcqCount: MCQ_COUNT,
       typedCount: TYPED_COUNT,
     });
-  } catch {
-    return new Response("AI service unavailable", { status: 503 });
+  } catch (err) {
+    return aiErrorResponse("islands-quiz", err);
   }
 
   const { error: insertError } = await supabase.from("island_quizzes").insert({
