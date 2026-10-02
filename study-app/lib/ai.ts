@@ -200,6 +200,11 @@ export async function aiRetry<T>(op: string, fn: () => Promise<T>): Promise<T> {
     } catch (err) {
       const ai = classifyAiError(err);
       if (ai.exhausted || !ai.retryable) throw ai;
+      // Quota (F48): never retry a 429 blindly — no Retry-After means the
+      // window won't open on a known schedule, and every attempt burns a
+      // scarce free-tier request. Only a known-short RPM window
+      // (Retry-After ≤5s) earns an auto-retry.
+      if (ai.code === "ai_quota" && (ai.retryAfterMs == null || ai.retryAfterMs > 5000)) throw ai;
       const longWait = ai.retryAfterMs != null && ai.retryAfterMs > 5000;
       if (longWait) throw ai;
       if (attempt >= SERVER_BACKOFF_MS.length) {

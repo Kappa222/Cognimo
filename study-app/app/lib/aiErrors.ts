@@ -28,10 +28,12 @@ export class ApiCallError extends Error {
 
 export const DEFAULT_AI_TIMEOUT_MS = 60_000;
 
-// Codes where an automatic retry can plausibly help. rate_limit only qualifies
-// for short windows (retryDelayMs caps long Retry-After waits to the panel).
+// Codes where an automatic retry can plausibly help. ai_quota is deliberately
+// absent (F48): a free-tier 429 almost never clears within our backoff, so the
+// panel shows immediately instead of burning scarce requests. rate_limit only
+// qualifies for short windows (retryDelayMs caps long Retry-After waits to the
+// panel).
 const RETRYABLE_CODES = new Set([
-  "ai_quota",
   "ai_unavailable",
   "ai_empty",
   "ai_bad_json",
