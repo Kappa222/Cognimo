@@ -9,6 +9,14 @@ import QuizRunner from "./QuizRunner";
 import IslandScoreScreen from "./IslandScoreScreen";
 import { readTextStream } from "../lib/stream";
 import {
+  aiFetch,
+  withAiRetry,
+  failureFromError,
+  makeAiFailure,
+  withHint,
+  ApiCallError,
+} from "../lib/aiErrors";
+import {
   accumulateTeachingVerdicts,
   createTeachingTally,
   teachingScore,
@@ -86,42 +94,64 @@ export default function FinaleRunner({
   const streamChat = useCallback(
     async (phaseInstruction: string): Promise<string | null> => {
       abortRef.current?.abort();
-      abortRef.current = new AbortController();
+      const controller = new AbortController();
+      abortRef.current = controller;
       setIsStreaming(true);
       setStreamingText("");
       try {
         const history = historyRef.current;
-        const res = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            sessionId,
-            messages:
-              history.length > 0
-                ? history.slice(-30)
-                : [
-                    {
-                      role: "user",
-                      content:
-                        "Most kezdődik a záróvizsga előtti átfogó ismétlés. Kövesd a fázis-instrukciót, magyarul.",
-                    },
-                  ],
-            phaseInstruction,
-          }),
-          signal: abortRef.current.signal,
-        });
-        if (!res.ok) throw new Error(`API error: ${res.status}`);
-        if (!res.body) throw new Error("No response body");
-        const fullText = await readTextStream(res.body, setStreamingText);
+        const fullText = await withAiRetry(
+          async () => {
+            const res = await aiFetch(
+              "/api/chat",
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  sessionId,
+                  messages:
+                    history.length > 0
+                      ? history.slice(-30)
+                      : [
+                          {
+                            role: "user",
+                            content:
+                              "Most kezdődik a záróvizsga előtti átfogó ismétlés. Kövesd a fázis-instrukciót, magyarul.",
+                          },
+                        ],
+                  phaseInstruction,
+                }),
+                signal: controller.signal,
+              },
+              60_000,
+            );
+            if (!res.body) throw new ApiCallError(makeAiFailure("ai_empty"));
+            const text = await readTextStream(res.body, setStreamingText);
+            if (!text.trim()) {
+              // Server-side first-chunk gate (F44) makes this unlikely —
+              // kept as fallback so an empty turn never renders.
+              throw new ApiCallError(makeAiFailure("ai_empty"));
+            }
+            return text;
+          },
+          {
+            attempts: 3,
+            signal: controller.signal,
+            onRetry: (failure, attempt, delayMs) => {
+              console.warn(`Finale chat retry ${attempt + 2}/3 in ${delayMs}ms: ${failure.code}`);
+              setStreamingText("");
+            },
+          },
+        );
         setStreamingText("");
-        if (!fullText.trim()) throw new Error("Empty response from AI");
         pushAssistant(fullText);
         return fullText;
       } catch (err) {
-        if ((err as Error).name === "AbortError") return null;
-        console.error("Finale chat error:", err);
+        if (err instanceof Error && err.name === "AbortError") return null;
+        const failure = failureFromError(err);
+        console.error(`Finale chat failed: code=${failure.code} status=${failure.status} hint=${failure.hint}`, err);
         setStreamingText("");
-        setError("Nem sikerült kapcsolódni Lumihoz. Próbáld újra!");
+        setError(withHint(failure));
         return null;
       } finally {
         setIsStreaming(false);
@@ -154,23 +184,24 @@ export default function FinaleRunner({
     setStage("quiz-loading");
     setError("");
     try {
-      const res = await fetch("/api/topic/quiz", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topicId }),
-      });
-      if (!res.ok) {
-        const serverMessage = (await res.text()).trim();
-        throw new Error(serverMessage || "Nem sikerült betölteni a záróvizsgát.");
-      }
+      const res = await aiFetch(
+        "/api/topic/quiz",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ topicId }),
+        },
+        120_000,
+      );
       const body = await res.json();
       const questions = (body.questions ?? []) as QuizRunnerQuestion[];
       if (questions.length === 0) throw new Error("Üres kvíz érkezett.");
       setQuizQuestions(questions);
       setStage("quiz");
     } catch (err) {
-      console.error("Finale quiz load failed:", err);
-      setError(err instanceof Error && err.message ? err.message : "Nem sikerült betölteni a záróvizsgát.");
+      const failure = failureFromError(err);
+      console.error(`Finale quiz load failed: code=${failure.code} status=${failure.status}`, err);
+      setError(withHint(failure));
       setStage("quiz-loading");
     }
   }, [topicId]);
@@ -235,26 +266,42 @@ export default function FinaleRunner({
     setAssessPhase("grading");
     setIsGrading(true);
     try {
-      const res = await fetch("/api/evaluate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId,
-          topicId,
-          islandTitle: "Záróvizsga",
-          keyConcepts: focusConcepts,
-          question: lastQuestionRef.current,
-          userAnswer: trimmed,
-          round,
-          isRemediation: false,
-          provenConcepts: [],
-        }),
-      });
-      if (!res.ok) throw new Error(`Evaluate error: ${res.status}`);
-      const result: EvaluateResult = await res.json();
-      if (Array.isArray(result.verdicts)) {
-        accumulateTeachingVerdicts(teachingRef.current, result.verdicts);
-      }
+      const result = await withAiRetry(
+        async () => {
+          const res = await aiFetch(
+            "/api/evaluate",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                sessionId,
+                topicId,
+                islandTitle: "Záróvizsga",
+                keyConcepts: focusConcepts,
+                question: lastQuestionRef.current,
+                userAnswer: trimmed,
+                round,
+                isRemediation: false,
+                provenConcepts: [],
+              }),
+            },
+            60_000,
+          );
+          const parsed = (await res.json()) as EvaluateResult;
+          if (!Array.isArray(parsed.verdicts)) {
+            // Malformed judge output is retryable — a reroll usually lands clean.
+            throw new ApiCallError(makeAiFailure("ai_bad_response"));
+          }
+          return parsed;
+        },
+        {
+          attempts: 2,
+          onRetry: (failure, attempt, delayMs) => {
+            console.warn(`Finale evaluate retry in ${delayMs}ms: ${failure.code}`);
+          },
+        },
+      );
+      accumulateTeachingVerdicts(teachingRef.current, result.verdicts);
       setAssessPhase("reacting");
       const hint = result.feedback_hint || "A felhasználó válaszolt a kérdésedre.";
       const reaction = await streamChat(
@@ -272,8 +319,15 @@ export default function FinaleRunner({
         askRound(round + 1, focusConcepts);
       }
     } catch (err) {
-      console.error("Finale assess error:", err);
-      setError("Az értékelés nem sikerült. Próbáld újra, vagy írj új választ!");
+      if (err instanceof ApiCallError && err.failure.status === 409) {
+        // Round already recorded (double-submit) — the first request already
+        // advanced the flow; reopen the input without an error banner.
+        setAssessPhase("waiting");
+        return;
+      }
+      const failure = failureFromError(err);
+      console.error(`Finale assess failed: code=${failure.code} status=${failure.status}`, err);
+      setError(withHint(failure));
       setAssessPhase("waiting");
     } finally {
       setIsGrading(false);
@@ -311,19 +365,26 @@ export default function FinaleRunner({
     async (answers: QuizSubmittedAnswer[]): Promise<QuizAttemptBreakdown> => {
       const visit = teachingRef.current;
       const teachingCorrect = teachingScore(visit);
-      const res = await fetch("/api/topic/quiz/attempt", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          topicId,
-          answers,
-          teachingCorrect,
-          teachingTotal: visit.total,
-        }),
-      });
-      if (!res.ok) {
-        const serverMessage = (await res.text()).trim();
-        throw new Error(serverMessage || "Nem sikerült beküldeni. Próbáld újra!");
+      let res: Response;
+      try {
+        res = await aiFetch(
+          "/api/topic/quiz/attempt",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              topicId,
+              answers,
+              teachingCorrect,
+              teachingTotal: visit.total,
+            }),
+          },
+          120_000,
+        );
+      } catch (err) {
+        const failure = failureFromError(err);
+        console.error(`Finale quiz submit failed: code=${failure.code} status=${failure.status}`, err);
+        throw new Error(withHint(failure));
       }
       const result = (await res.json()) as QuizAttemptBreakdown;
       // Finale completion: single PUT marks the topic done.

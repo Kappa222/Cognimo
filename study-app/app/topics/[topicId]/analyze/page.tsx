@@ -6,6 +6,7 @@ import Link from "next/link";
 import { supabase } from "../../../../lib/supabase";
 import type { ChatSession, Island } from "../../../lib/types";
 import { parseIslands } from "../../../lib/islands";
+import { aiFetch, failureFromError, withHint } from "../../../lib/aiErrors";
 import AnalysisProgressRing from "../../../components/AnalysisProgressRing";
 
 type AnalyzeStatus = "checking" | "working" | "done" | "error";
@@ -183,19 +184,20 @@ export default function AnalyzePage() {
 
       let islands = islandsRef.current;
       if (!islands) {
-        const analyzeRes = await fetch("/api/analyze", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ topicId }),
-          signal,
-        });
+        // Bounded by the same generous backstop the progress ring uses (the
+        // ring's own timeout fires first with its friendlier message); non-2xx
+        // responses arrive pre-classified as ApiCallError (F44).
+        const analyzeRes = await aiFetch(
+          "/api/analyze",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ topicId }),
+            signal,
+          },
+          ANALYZE_TIMEOUT_MS,
+        );
         if (signal.aborted) return;
-        if (!analyzeRes.ok) {
-          // Server messages are already user-facing Hungarian.
-          const serverMessage = (await analyzeRes.text()).trim();
-          fail(serverMessage || "Nem sikerült elemezni a tananyagot. Próbáld újra!");
-          return;
-        }
         try {
           islands = parseIslands(await analyzeRes.json());
         } catch {
@@ -230,8 +232,9 @@ export default function AnalyzePage() {
       }, SUCCESS_PAUSE_MS);
     } catch (err) {
       if ((err as Error).name === "AbortError") return;
-      console.error("Analysis failed:", err);
-      fail("Nem sikerült kapcsolódni. Ellenőrizd az internetet, majd próbáld újra!");
+      const failure = failureFromError(err);
+      console.error(`Analysis failed: code=${failure.code} status=${failure.status}`, err);
+      fail(withHint(failure));
     }
   }, [topicId, router, startSimulation, stopSimulation, fail]);
 
