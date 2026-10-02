@@ -7,6 +7,14 @@ import { readTextStream } from "../../../lib/stream";
 import { getPhaseInstruction } from "../../../lib/prompts";
 import { useSessionSaves } from "./useSessionSaves";
 import {
+  aiFetch,
+  withAiRetry,
+  failureFromError,
+  makeAiFailure,
+  withHint,
+  ApiCallError,
+} from "../../../lib/aiErrors";
+import {
   accumulateTeachingVerdicts,
   createTeachingTally,
   teachingScore,
@@ -66,8 +74,10 @@ export function useIslandFlow({ topicId, router, topicName }: IslandFlowArgs) {
   const [isEvaluating, setIsEvaluating] = useState(false);
   // Inline (non-fatal) chat errors: transient AI/evaluate failures show a
   // retry panel instead of hijacking the whole page like `error` does.
+  // `hint` is the self-describing diagnostic ("HTTP 429 · ai_quota").
   const [chatError, setChatError] = useState<{
     message: string;
+    hint: string;
     retry: "ai" | "evaluate";
   } | null>(null);
 
@@ -198,24 +208,24 @@ export function useIslandFlow({ topicId, router, topicName }: IslandFlowArgs) {
     setQuizStage("loading");
     phase.setSubPhase("quiz");
     try {
-      const res = await fetch("/api/islands/quiz", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topicId, islandTitle: island.title }),
-      });
-      if (!res.ok) {
-        const serverMessage = (await res.text()).trim();
-        throw new Error(serverMessage || "Nem sikerült betölteni a kvízt. Próbáld újra!");
-      }
+      const res = await aiFetch(
+        "/api/islands/quiz",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ topicId, islandTitle: island.title }),
+        },
+        120_000,
+      );
       const body = await res.json();
       const questions = (body.questions ?? []) as QuizRunnerQuestion[];
       if (questions.length === 0) throw new Error("Üres kvíz érkezett. Próbáld újra!");
       setQuizQuestions(questions);
       setQuizStage("ready");
     } catch (err) {
-      console.error("Island quiz load failed:", err);
-      const message = err instanceof Error && err.message ? err.message : "";
-      setQuizError(message || "Nem sikerült betölteni a kvízt. Próbáld újra!");
+      const failure = failureFromError(err);
+      console.error(`Island quiz load failed: code=${failure.code} status=${failure.status}`, err);
+      setQuizError(withHint(failure));
       setQuizStage("error");
     }
   }, [islands, phase, session, saveAssessState, topicId]);
@@ -226,21 +236,28 @@ export function useIslandFlow({ topicId, router, topicName }: IslandFlowArgs) {
       if (!island || !session) throw new Error("Hiányzó sziget. Töltsd újra az oldalt!");
       const visit = visitTeachingRef.current;
       const teachingCorrect = teachingScore(visit);
-      const res = await fetch("/api/islands/quiz/attempt", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          topicId,
-          islandTitle: island.title,
-          answers,
-          teachingCorrect,
-          teachingTotal: visit.total,
-          isReview,
-        }),
-      });
-      if (!res.ok) {
-        const serverMessage = (await res.text()).trim();
-        throw new Error(serverMessage || "Nem sikerült beküldeni. Próbáld újra!");
+      let res: Response;
+      try {
+        res = await aiFetch(
+          "/api/islands/quiz/attempt",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              topicId,
+              islandTitle: island.title,
+              answers,
+              teachingCorrect,
+              teachingTotal: visit.total,
+              isReview,
+            }),
+          },
+          120_000,
+        );
+      } catch (err) {
+        const failure = failureFromError(err);
+        console.error(`Quiz attempt failed: code=${failure.code} status=${failure.status}`, err);
+        throw new Error(withHint(failure));
       }
       const result = (await res.json()) as QuizAttemptBreakdown;
       setQuizResult(result);
@@ -326,126 +343,134 @@ export function useIslandFlow({ topicId, router, topicName }: IslandFlowArgs) {
       subPhaseTimerRef.current = setTimeout(() => phase.setSubPhase("ai-responding"), 100);
     };
 
-    // One automatic retry with backoff; final failure becomes an inline
-    // retry panel (chatError), never a full-page error.
-    for (let attempt = 0; attempt < 2; attempt++) {
-      if (attempt > 0) {
-        setStreamingText("");
-        await new Promise((r) => setTimeout(r, 1500));
-      }
+    // Class-aware retry (F45): backoff honors Retry-After, only retryable
+    // failures loop (max 3 attempts), and both the request and the backoff
+    // sleep abort on unmount/navigation — no retry fires after leaving the
+    // page. Final failure becomes an inline retry panel (chatError), never a
+    // full-page error.
+    try {
       abortRef.current = new AbortController();
+      const signal = abortRef.current.signal;
+      const fullText = await withAiRetry(
+        async () => {
+          const res = await aiFetch(
+            "/api/chat",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ sessionId: session.id, messages: history, phaseInstruction, islandTitle }),
+              signal,
+            },
+            60_000,
+          );
 
-      try {
-        const res = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionId: session.id, messages: history, phaseInstruction, islandTitle }),
-          signal: abortRef.current.signal,
-        });
+          if (!res.body) throw new ApiCallError(makeAiFailure("ai_empty"));
+          const text = await readTextStream(res.body, setStreamingText);
 
-        if (!res.ok) { const errText = await res.text(); throw new Error(`API error: ${res.status} ${errText}`); }
+          if (!text.trim()) {
+            // The server-side first-chunk gate (F44) should make this
+            // impossible — kept as fallback so an empty turn never renders.
+            throw new ApiCallError(makeAiFailure("ai_empty"));
+          }
+          return text;
+        },
+        {
+          attempts: 3,
+          signal,
+          onRetry: (failure, attempt, delayMs) => {
+            console.warn(`AI retry ${attempt + 2}/3 in ${delayMs}ms: ${failure.code}`);
+            setStreamingText("");
+          },
+        },
+      );
 
-        if (!res.body) throw new Error("No response body");
-        const fullText = await readTextStream(res.body, setStreamingText);
+      await saveMessage("assistant", fullText);
+      setStoredMessages((prev) => [...prev, { role: "assistant", content: fullText, id: "", session_id: session.id, created_at: new Date().toISOString() }]);
+      setDisplayMessages((prev) => [...prev, { role: "ai", text: fullText }]);
+      setStreamingText("");
+      setChatError(null);
 
-        if (!fullText.trim()) {
-          // Empty response counts as a failed attempt — throw to retry.
-          throw new Error("Empty response from AI");
-        }
+      const stepPhase = phase.currentStep?.phase;
 
-        await saveMessage("assistant", fullText);
-        setStoredMessages((prev) => [...prev, { role: "assistant", content: fullText, id: "", session_id: session.id, created_at: new Date().toISOString() }]);
-        setDisplayMessages((prev) => [...prev, { role: "ai", text: fullText }]);
-        setStreamingText("");
-        setChatError(null);
+      if (stepPhase === "explain" && islandStep === "teach") {
+        // Bite-size: stay in teach after every bite. Taps or free text
+        // drive the next bite; the handover button enters assess.
+        teachIntentRef.current = null;
+        setTeachRound((r) => r + 1);
+        hasUserRespondedRef.current = false;
+        phase.setSubPhase("waiting-response");
+      } else if (islandStep === "assess" || islandStep === "remediation") {
+        // After Lumi's reaction stream
+        const result = evaluateResultRef.current;
+        evaluateResultRef.current = null;
 
-        const stepPhase = phase.currentStep?.phase;
+        if (result && result.next_focus === null) {
+          // All concepts proven → island quiz
+          await enterQuiz();
+        } else if (result && assessRound >= MAX_ASSESS_ROUNDS) {
+          // Max rounds reached → check gate
+          const currentIsland = islands[phase.stepIndex];
+          const allProven = currentIsland?.key_concepts.every(
+            (k) => provenConcepts.includes(k),
+          ) ?? false;
 
-        if (stepPhase === "explain" && islandStep === "teach") {
-          // Bite-size: stay in teach after every bite. Taps or free text
-          // drive the next bite; the handover button enters assess.
-          teachIntentRef.current = null;
-          setTeachRound((r) => r + 1);
-          hasUserRespondedRef.current = false;
-          phase.setSubPhase("waiting-response");
-        } else if (islandStep === "assess" || islandStep === "remediation") {
-          // After Lumi's reaction stream
-          const result = evaluateResultRef.current;
-          evaluateResultRef.current = null;
-
-          if (result && result.next_focus === null) {
-            // All concepts proven → island quiz
+          if (allProven) {
             await enterQuiz();
-          } else if (result && assessRound >= MAX_ASSESS_ROUNDS) {
-            // Max rounds reached → check gate
-            const currentIsland = islands[phase.stepIndex];
-            const allProven = currentIsland?.key_concepts.every(
-              (k) => provenConcepts.includes(k),
-            ) ?? false;
-
-            if (allProven) {
-              await enterQuiz();
-            } else if (remediationCount < MAX_REMEDIATION && islandStep === "assess") {
-              // Enter remediation
-              const newCount = remediationCount + 1;
-              setRemediationCount(newCount);
-              setIslandStep("remediation");
-              setAssessRound(1);
-              hasUserRespondedRef.current = false;
-              await saveAssessState();
-              // Trigger remediation micro-lesson immediately
-              scheduleAiResponding();
-            } else {
-              // Assessment exhausted — the quiz measures what stuck.
-              await enterQuiz();
-            }
-          } else if (result && result.next_focus) {
-            // Ask next question — clear follow-up flag so the next AI turn
-            // asks (not reacts).
-            assessQuestionRef.current = result.next_focus;
-            setAssessRound((r) => r + 1);
+          } else if (remediationCount < MAX_REMEDIATION && islandStep === "assess") {
+            // Enter remediation
+            const newCount = remediationCount + 1;
+            setRemediationCount(newCount);
+            setIslandStep("remediation");
+            setAssessRound(1);
             hasUserRespondedRef.current = false;
             await saveAssessState();
+            // Trigger remediation micro-lesson immediately
             scheduleAiResponding();
           } else {
-            phase.setSubPhase("waiting-response");
+            // Assessment exhausted — the quiz measures what stuck.
+            await enterQuiz();
           }
-        } else if (stepPhase === "complete") {
-          // No-op, completion screen handles it
+        } else if (result && result.next_focus) {
+          // Ask next question — clear follow-up flag so the next AI turn
+          // asks (not reacts).
+          assessQuestionRef.current = result.next_focus;
+          setAssessRound((r) => r + 1);
+          hasUserRespondedRef.current = false;
+          await saveAssessState();
+          scheduleAiResponding();
         } else {
-          // Defensive fallback: no current step (empty/out-of-range plan).
-          // Settle instead of spinning — never leave ai-responding hanging.
-          if (hasUserRespondedRef.current) {
-            hasUserRespondedRef.current = false;
-            phase.goToNextStep();
-          } else {
-            phase.setSubPhase("waiting-response");
-          }
+          phase.setSubPhase("waiting-response");
         }
-        // Success: exit the retry loop so the turn is generated, saved and
-        // rendered exactly once (previously the loop ran a second stream).
+      } else if (stepPhase === "complete") {
+        // No-op, completion screen handles it
+      } else {
+        // Defensive fallback: no current step (empty/out-of-range plan).
+        // Settle instead of spinning — never leave ai-responding hanging.
+        if (hasUserRespondedRef.current) {
+          hasUserRespondedRef.current = false;
+          phase.goToNextStep();
+        } else {
+          phase.setSubPhase("waiting-response");
+        }
+      }
+      // Success: the turn is generated, saved and rendered exactly once.
+      streamingRef.current = false;
+      setIsStreaming(false);
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
         streamingRef.current = false;
         setIsStreaming(false);
         return;
-      } catch (err) {
-        if ((err as Error).name === "AbortError") {
-          streamingRef.current = false;
-          setIsStreaming(false);
-          return;
-        }
-        console.error(`AI stream error (attempt ${attempt + 1}/2):`, err);
-        // Drop partial text so a phantom bubble never lingers.
-        setStreamingText("");
-        if (attempt === 1) {
-          setChatError({
-            message: "Nem sikerült kapcsolódni Lumihoz. Ellenőrizd az internetet, majd próbáld újra!",
-            retry: "ai",
-          });
-        }
       }
+      const failure = failureFromError(err);
+      // Structured one-liner so reports identify the real cause (F44/F45).
+      console.error(`AI stream failed: code=${failure.code} status=${failure.status} hint=${failure.hint}`, err);
+      // Drop partial text so a phantom bubble never lingers.
+      setStreamingText("");
+      streamingRef.current = false;
+      setIsStreaming(false);
+      setChatError({ message: failure.message, hint: failure.hint, retry: "ai" });
     }
-    streamingRef.current = false;
-    setIsStreaming(false);
   }, [session, phase, saveMessage, saveAssessState, enterQuiz, islandStep, islands, assessRound, provenConcepts, remediationCount]);
 
   const triggerAIResponse = useCallback(async () => {
@@ -591,51 +616,42 @@ export function useIslandFlow({ topicId, router, topicName }: IslandFlowArgs) {
       const currentIsland = islands[phase.stepIndex];
       if (!currentIsland) return;
 
-      const res = await fetch("/api/evaluate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId: session.id,
-          topicId,
-          islandTitle: currentIsland.title,
-          keyConcepts: currentIsland.key_concepts,
-          question: assessQuestionRef.current,
-          userAnswer: answer,
-          round: assessRound,
-          isRemediation: islandStep === "remediation",
-          provenConcepts,
-          isReview,
-        }),
-      });
-
-      if (!res.ok) {
-        // 409 = this round was already recorded (double-submit that slipped
-        // through). The first request already advanced the flow — stay quiet.
-        if (res.status === 409) {
-          setIsEvaluating(false);
-          return;
-        }
-        const errText = await res.text();
-        console.error("Evaluate error:", res.status, errText);
-        setChatError({
-          message: "Az értékelés nem sikerült. Próbáld újra, vagy írj új választ!",
-          retry: "evaluate",
-        });
-        setIsEvaluating(false);
-        return;
-      }
-
-      const result: EvaluateResult = await res.json();
-
-      if (!Array.isArray(result.verdicts)) {
-        console.error("Evaluate error: malformed verdicts", result);
-        setChatError({
-          message: "Az értékelés nem sikerült. Próbáld újra, vagy írj új választ!",
-          retry: "evaluate",
-        });
-        setIsEvaluating(false);
-        return;
-      }
+      const result = await withAiRetry(
+        async () => {
+          const res = await aiFetch(
+            "/api/evaluate",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                sessionId: session.id,
+                topicId,
+                islandTitle: currentIsland.title,
+                keyConcepts: currentIsland.key_concepts,
+                question: assessQuestionRef.current,
+                userAnswer: answer,
+                round: assessRound,
+                isRemediation: islandStep === "remediation",
+                provenConcepts,
+                isReview,
+              }),
+            },
+            60_000,
+          );
+          const parsed = (await res.json()) as EvaluateResult;
+          if (!Array.isArray(parsed.verdicts)) {
+            // Malformed judge output is retryable — a reroll usually lands clean.
+            throw new ApiCallError(makeAiFailure("ai_bad_response"));
+          }
+          return parsed;
+        },
+        {
+          attempts: 2,
+          onRetry: (failure, attempt, delayMs) => {
+            console.warn(`Evaluate retry in ${delayMs}ms: ${failure.code}`);
+          },
+        },
+      );
 
       // Decisive verdicts feed the blended island score (not_required
       // carries no evidence either way).
@@ -662,11 +678,14 @@ export function useIslandFlow({ topicId, router, topicName }: IslandFlowArgs) {
       setChatError(null);
       phase.setSubPhase("ai-responding");
     } catch (err) {
-      console.error("Evaluate error:", err);
-      setChatError({
-        message: "Az értékelés nem sikerült. Próbáld újra, vagy írj új választ!",
-        retry: "evaluate",
-      });
+      if (err instanceof ApiCallError && err.failure.status === 409) {
+        // 409 = this round was already recorded (double-submit that slipped
+        // through). The first request already advanced the flow — stay quiet.
+        return;
+      }
+      const failure = failureFromError(err);
+      console.error(`Evaluate failed: code=${failure.code} status=${failure.status}`, err);
+      setChatError({ message: failure.message, hint: failure.hint, retry: "evaluate" });
     } finally {
       setIsEvaluating(false);
     }

@@ -237,7 +237,12 @@ export default function LearnPage() {
         {/* Inline chat error with retry — transient AI/evaluate failures */}
         {chatError && !isStreaming && !isEvaluating && (
           <div className="flex items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600 dark:border-red-800 dark:bg-red-950/30 dark:text-red-400">
-            <p>{chatError.message}</p>
+            <div className="min-w-0">
+              <p>{chatError.message}</p>
+              {chatError.hint && (
+                <p className="mt-0.5 font-mono text-xs text-red-400 dark:text-red-500">{chatError.hint}</p>
+              )}
+            </div>
             <button
               onClick={handleChatRetry}
               className="shrink-0 cursor-pointer rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-all hover:bg-violet-600 active:scale-[0.98]"
