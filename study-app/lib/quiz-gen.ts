@@ -90,7 +90,7 @@ function coerceItem(raw: unknown, allowedConcepts: Set<string>): QuizItem | null
 }
 
 /**
- * Generate a mixed MCQ + typed quiz via Gemini. Throws when the AI output
+ * Generate a mixed MCQ + typed quiz via DeepSeek. Throws when the AI output
  * cannot satisfy the requested counts — callers surface a retryable error.
  */
 export async function generateQuizQuestions(spec: GenerateSpec): Promise<QuizItem[]> {

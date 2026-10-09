@@ -1,38 +1,12 @@
-import {
-  GoogleGenerativeAI,
-  GoogleGenerativeAIAbortError,
-  GoogleGenerativeAIFetchError,
-  GoogleGenerativeAIRequestInputError,
-  GoogleGenerativeAIResponseError,
-  HarmCategory,
-  HarmBlockThreshold,
-} from "@google/generative-ai";
 import { requireEnv } from "./env";
 
-// Free-tier pick (F49): 3.5 Flash-Lite carries the friendliest free quota in
-// new projects; override with GEMINI_MODEL (.env.local) to experiment.
-const MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
-
-const SAFETY_SETTINGS = [
-  { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-  { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-  { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-  { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-];
-
-// One shared client for all AI calls (chat, evaluation, quiz generation,
-// grading) — constructing it per call would rebuild the transport every time.
-let geminiClient: GoogleGenerativeAI | null = null;
-
-function getGeminiClient() {
-  if (!geminiClient) {
-    geminiClient = new GoogleGenerativeAI(requireEnv("GEMINI_API_KEY"));
-  }
-  return geminiClient;
-}
+// DeepSeek Cloud (OpenAI-compatible) endpoint + model. Override with
+// DEEPSEEK_BASE_URL / DEEPSEEK_MODEL (.env.local) to experiment.
+const BASE_URL = (process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com").replace(/\/+$/, "");
+const MODEL = process.env.DEEPSEEK_MODEL || "deepseek-chat";
 
 // ---------------------------------------------------------------------------
-// Error classification (F44)
+// Error classification (F44, kept across the Gemini -> DeepSeek migration)
 //
 // Every upstream failure is normalized into an AiError carrying a stable
 // machine code, the HTTP status routes should return, and whether a retry
@@ -42,13 +16,13 @@ function getGeminiClient() {
 // ---------------------------------------------------------------------------
 
 export type AiErrorCode =
-  | "ai_quota" // upstream 429 — free-tier quota/rate limit in most cases
+  | "ai_quota" // upstream 429 — rate limit / insufficient quota
   | "ai_unavailable" // upstream 5xx, network error or timeout
   | "ai_empty" // 200 response carried no usable text/JSON
-  | "ai_blocked" // safety or prompt-level block — retrying rarely helps
+  | "ai_blocked" // refusal or content filter — retrying rarely helps
   | "ai_bad_json" // model output was not valid JSON
   | "ai_bad_response" // parsed but unusable output (e.g. quiz shortfall)
-  | "ai_invalid"; // upstream rejected the request (config/input)
+  | "ai_invalid"; // upstream rejected the request (config/input/auth/billing)
 
 export class AiError extends Error {
   readonly code: AiErrorCode;
@@ -81,23 +55,17 @@ function excerpt(value: string, max = 160): string {
   return value.replace(/\s+/g, " ").trim().slice(0, max);
 }
 
-function extractRetryAfterMs(details: unknown[] | undefined): number | undefined {
-  for (const d of details ?? []) {
-    if (d && typeof d === "object" && "retryDelay" in d) {
-      const raw = (d as { retryDelay?: unknown }).retryDelay;
-      if (typeof raw === "string") {
-        const sec = Number.parseFloat(raw.replace(/s$/, ""));
-        if (Number.isFinite(sec) && sec >= 0) return Math.round(sec * 1000);
-      }
-    }
-  }
+function retryAfterFromHeaders(headers: Headers): number | undefined {
+  const raw = headers.get("retry-after");
+  if (!raw) return undefined;
+  const sec = Number.parseFloat(raw);
+  if (Number.isFinite(sec) && sec >= 0) return Math.round(sec * 1000);
   return undefined;
 }
 
-// Bundler-safe upstream status probe: instanceof works within one process,
-// the duck-typed fallback survives duplicated SDK copies after bundling.
+// Bundler-safe upstream status probe: keeps working if a raw upstream error
+// object with a numeric status ever reaches classifyAiError.
 function upstreamStatusOf(err: unknown): number | undefined {
-  if (err instanceof GoogleGenerativeAIFetchError) return err.status;
   if (
     err &&
     typeof err === "object" &&
@@ -109,14 +77,14 @@ function upstreamStatusOf(err: unknown): number | undefined {
   return undefined;
 }
 
-function fromUpstream(err: unknown, status: number | undefined): AiError | null {
-  if (status === undefined) return null;
-  const retryAfterMs = extractRetryAfterMs(
-    err instanceof GoogleGenerativeAIFetchError ? err.errorDetails : undefined,
-  );
+function fromUpstream(status: number, retryAfterMs?: number): AiError {
   const detail = `upstream ${status}`;
   if (status === 429) {
     return new AiError("ai_quota", 429, true, "AI rate/quota limit reached", { retryAfterMs, detail });
+  }
+  if (status === 402) {
+    // DeepSeek "insufficient balance" — topping up, not retrying, fixes it.
+    return new AiError("ai_invalid", 500, false, "AI quota/billing rejected upstream", { detail });
   }
   if (status >= 500) {
     return new AiError("ai_unavailable", 503, true, "AI upstream unavailable", { detail });
@@ -124,24 +92,15 @@ function fromUpstream(err: unknown, status: number | undefined): AiError | null 
   if (status >= 400) {
     return new AiError("ai_invalid", 500, false, "AI request rejected upstream", { detail });
   }
-  return null;
+  return new AiError("ai_unavailable", 503, true, "AI call failed", { detail });
 }
 
 export function classifyAiError(err: unknown): AiError {
   if (err instanceof AiError) return err;
 
-  const upstream = fromUpstream(err, upstreamStatusOf(err));
-  if (upstream) return upstream;
+  const status = upstreamStatusOf(err);
+  if (status !== undefined) return fromUpstream(status);
 
-  if (err instanceof GoogleGenerativeAIResponseError) {
-    return new AiError("ai_blocked", 502, false, "AI response blocked", { detail: excerpt(err.message) });
-  }
-  if (err instanceof GoogleGenerativeAIRequestInputError) {
-    return new AiError("ai_invalid", 500, false, "AI request invalid", { detail: excerpt(err.message) });
-  }
-  if (err instanceof GoogleGenerativeAIAbortError) {
-    return new AiError("ai_unavailable", 504, true, "AI request aborted", { detail: "abort" });
-  }
   if (err instanceof Error) {
     if (err.message.includes("Missing required environment variable")) {
       // Fail-fast env helper — retrying a missing key never helps.
@@ -204,8 +163,8 @@ export async function aiRetry<T>(op: string, fn: () => Promise<T>): Promise<T> {
       if (ai.exhausted || !ai.retryable) throw ai;
       // Quota (F48): never retry a 429 blindly — no Retry-After means the
       // window won't open on a known schedule, and every attempt burns a
-      // scarce free-tier request. Only a known-short RPM window
-      // (Retry-After ≤5s) earns an auto-retry.
+      // paid request. Only a known-short window (Retry-After ≤5s) earns an
+      // auto-retry.
       if (ai.code === "ai_quota" && (ai.retryAfterMs == null || ai.retryAfterMs > 5000)) throw ai;
       const longWait = ai.retryAfterMs != null && ai.retryAfterMs > 5000;
       if (longWait) throw ai;
@@ -228,73 +187,124 @@ export async function aiRetry<T>(op: string, fn: () => Promise<T>): Promise<T> {
   }
 }
 
-function toGeminiMessages(
-  messages: { role: string; content: string }[],
-): { role: "user" | "model"; parts: { text: string }[] }[] {
-  return messages.map((m) => ({
-    role: m.role === "assistant" ? "model" : ("user" as "user" | "model"),
-    parts: [{ text: m.content }],
-  }));
+// ---------------------------------------------------------------------------
+// DeepSeek transport (native fetch, OpenAI-compatible — no SDK dependency).
+// ---------------------------------------------------------------------------
+
+interface ChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+// Longest a single structured call may take — island analysis ships large
+// prompts and the client allows up to 6 min for /api/analyze.
+const JSON_TIMEOUT_MS = 180_000;
+
+function authHeaders(): Record<string, string> {
+  return {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${requireEnv("DEEPSEEK_API_KEY")}`,
+  };
+}
+
+function upstreamErrorMessage(payload: unknown, fallback: string): string {
+  if (payload && typeof payload === "object" && "error" in payload) {
+    const e = (payload as { error: unknown }).error;
+    if (typeof e === "string" && e.trim()) return e.trim().slice(0, 300);
+    if (e && typeof e === "object" && "message" in e && typeof (e as { message: unknown }).message === "string") {
+      const m = (e as { message: string }).message;
+      if (m.trim()) return m.trim().slice(0, 300);
+    }
+  }
+  return fallback;
+}
+
+async function throwForStatus(op: string, res: Response): Promise<never> {
+  const retryAfterMs = retryAfterFromHeaders(res.headers);
+  const text = await res.text().catch(() => "");
+  let payload: unknown = null;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch {
+    payload = null;
+  }
+  const message = upstreamErrorMessage(payload, `DeepSeek request failed (${op})`);
+  const ai = fromUpstream(res.status, retryAfterMs);
+  throw new AiError(ai.code, ai.httpStatus, ai.retryable, message, {
+    retryAfterMs: ai.retryAfterMs,
+    detail: ai.detail,
+  });
 }
 
 export async function completeJson(
   messages: { role: "system" | "user" | "assistant"; content: string }[],
 ): Promise<unknown> {
   return aiRetry("json", async () => {
-    const genAI = getGeminiClient();
-    const firstIsSystem = messages[0]?.role === "system";
-
-    let systemMessage: string | undefined;
-    let geminiMessages: { role: "user" | "model"; parts: { text: string }[] }[];
-
-    if (firstIsSystem) {
-      systemMessage = messages[0].content;
-      geminiMessages = toGeminiMessages(messages.slice(1));
-    } else {
-      geminiMessages = toGeminiMessages(messages);
-    }
-
-    if (geminiMessages.length === 0) {
-      // Gemini needs at least one content message; keep the system instruction
-      // (dropping it weakens JSON adherence) and send a minimal trigger.
-      geminiMessages = [
-        { role: "user", parts: [{ text: "Kövesd a rendszerutasítást, és csak érvényes JSON-nal válaszolj." }] },
-      ];
-    }
-
-    const model = genAI.getGenerativeModel({
-      model: MODEL,
-      ...(systemMessage ? { systemInstruction: systemMessage } : {}),
-      safetySettings: SAFETY_SETTINGS,
-      generationConfig: {
-        responseMimeType: "application/json",
-      },
-    });
-
-    let result;
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(new DOMException("AI request timed out", "TimeoutError")),
+      JSON_TIMEOUT_MS,
+    );
+    let res: Response;
     try {
-      result = await model.generateContent({ contents: geminiMessages });
+      res = await fetch(`${BASE_URL}/chat/completions`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          model: MODEL,
+          messages: messages.map(
+            (m): ChatMessage => ({ role: m.role, content: m.content }),
+          ),
+          response_format: { type: "json_object" },
+          temperature: 0.3,
+        }),
+        signal: controller.signal,
+      });
     } catch (e) {
+      clearTimeout(timer);
       throw classifyAiError(e);
     }
+    clearTimeout(timer);
 
-    let text: string;
+    if (!res.ok) await throwForStatus("json", res);
+
+    let payload: unknown;
     try {
-      text = result.response.text();
-    } catch (e) {
-      // Blocked candidate / missing text: SDK throws with finish details.
-      throw classifyAiError(e);
+      payload = await res.json();
+    } catch {
+      throw new AiError("ai_bad_json", 502, true, "AI response was not JSON", {
+        detail: `upstream ${res.status}`,
+      });
     }
 
-    if (!text) {
+    const choices =
+      payload && typeof payload === "object" && "choices" in payload
+        ? (payload as { choices?: unknown }).choices
+        : undefined;
+    const firstChoice =
+      Array.isArray(choices) && choices[0] && typeof choices[0] === "object"
+        ? (choices[0] as Record<string, unknown>)
+        : null;
+    const choiceMessage =
+      firstChoice && firstChoice.message && typeof firstChoice.message === "object"
+        ? (firstChoice.message as Record<string, unknown>)
+        : null;
+    const content = choiceMessage ? choiceMessage.content : undefined;
+    const refusal = choiceMessage ? choiceMessage.refusal : undefined;
+    if (typeof refusal === "string" && refusal.trim()) {
+      throw new AiError("ai_blocked", 502, false, "AI refused the request", {
+        detail: excerpt(refusal),
+      });
+    }
+    if (typeof content !== "string" || !content.trim()) {
       throw new AiError("ai_empty", 502, true, "Empty response from AI", { detail: "no text" });
     }
 
     try {
-      return JSON.parse(text);
+      return JSON.parse(content);
     } catch {
       throw new AiError("ai_bad_json", 502, true, "AI response was not valid JSON", {
-        detail: excerpt(text),
+        detail: excerpt(content),
       });
     }
   });
@@ -328,26 +338,89 @@ function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => void):
   });
 }
 
-type StreamChunk = { text: () => string; promptFeedback?: { blockReason?: string }; candidates?: { finishReason?: string }[] };
+interface SseStream {
+  iterator: AsyncGenerator<string>;
+  cancel: () => void;
+}
 
-function chunkText(chunk: StreamChunk, finish: string): string {
-  try {
-    return chunk.text();
-  } catch (e) {
-    const ai = classifyAiError(e);
-    throw new AiError(ai.code, ai.httpStatus, ai.retryable, ai.message, {
-      retryAfterMs: ai.retryAfterMs,
-      detail: `finish=${finish || "-"} ${ai.detail ?? ""}`.trim(),
-    });
+// Pulls OpenAI-style SSE (`data: {...}` / `data: [DONE]`) off the upstream
+// body and yields `delta.content` strings. Shared by the first-token gate
+// and the response stream so no token is lost between the two.
+function openSseStream(res: Response, abort: () => void): SseStream {
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finished = false;
+  let cancelled = false;
+
+  async function* iterator(): AsyncGenerator<string> {
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) continue;
+          const data = trimmed.slice(5).trim();
+          if (!data || data === "[DONE]") {
+            finished = true;
+            continue;
+          }
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(data);
+          } catch {
+            continue;
+          }
+          if (parsed && typeof parsed === "object" && "error" in parsed) {
+            const msg = upstreamErrorMessage(parsed, "AI stream failed");
+            throw new AiError("ai_unavailable", 503, true, msg, { detail: "midstream-error" });
+          }
+          const choices =
+            parsed && typeof parsed === "object" && "choices" in parsed
+              ? (parsed as { choices?: unknown }).choices
+              : undefined;
+          const firstChoice =
+            Array.isArray(choices) && choices[0] && typeof choices[0] === "object"
+              ? (choices[0] as Record<string, unknown>)
+              : null;
+          const delta =
+            firstChoice && firstChoice.delta && typeof firstChoice.delta === "object"
+              ? (firstChoice.delta as Record<string, unknown>)
+              : null;
+          const text = delta ? delta.content : undefined;
+          if (typeof text === "string" && text) yield text;
+        }
+        if (finished) break;
+      }
+    } finally {
+      try {
+        reader.releaseLock();
+      } catch {
+        // Reader already released or cancelled — nothing to do.
+      }
+    }
   }
+
+  const gen = iterator();
+  return {
+    iterator: gen,
+    cancel: () => {
+      if (cancelled) return;
+      cancelled = true;
+      void gen.return(undefined).catch(() => {});
+      void reader.cancel().catch(() => {});
+      abort();
+    },
+  };
 }
 
 // Streams tokens from the gated iterator: the first usable chunk is replayed,
 // the rest pulled live. Cancelling (client disconnect) stops the upstream too.
-function streamFrom(
-  iterator: AsyncGenerator<StreamChunk>,
-  first: string,
-): ReadableStream {
+function streamFrom(iterator: AsyncGenerator<string>, first: string, cancel: () => void): ReadableStream {
   return new ReadableStream({
     async start(controller) {
       try {
@@ -355,8 +428,7 @@ function streamFrom(
         for (;;) {
           const { done, value } = await iterator.next();
           if (done) break;
-          const text = chunkText(value, value.candidates?.[0]?.finishReason ?? "");
-          if (text) controller.enqueue(text);
+          if (value) controller.enqueue(value);
         }
         controller.close();
       } catch (err) {
@@ -367,7 +439,7 @@ function streamFrom(
       }
     },
     cancel() {
-      void iterator.return(undefined).catch(() => {});
+      cancel();
     },
   });
 }
@@ -380,55 +452,77 @@ export async function streamChat(
   // is open we can no longer change the status code, so everything after the
   // gate streams as-is (failures logged by streamFrom).
   return aiRetry("chat", async () => {
-    const genAI = getGeminiClient();
-    const model = genAI.getGenerativeModel({
-      model: MODEL,
-      systemInstruction: systemPrompt,
-      safetySettings: SAFETY_SETTINGS,
-    });
-
-    const geminiMessages = toGeminiMessages(messages);
-    let streamResult;
+    const controller = new AbortController();
+    const setupTimer = setTimeout(
+      () => controller.abort(new DOMException("AI request timed out", "TimeoutError")),
+      FIRST_TOKEN_TIMEOUT_MS,
+    );
+    const history: ChatMessage[] = messages.map((m) => ({
+      role: m.role === "assistant" ? "assistant" : "user",
+      content: m.content,
+    }));
+    let res: Response;
     try {
-      streamResult = await model.generateContentStream({ contents: geminiMessages });
+      res = await fetch(`${BASE_URL}/chat/completions`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          model: MODEL,
+          messages: [{ role: "system", content: systemPrompt }, ...history],
+          temperature: 0.7,
+          stream: true,
+        }),
+        signal: controller.signal,
+      });
     } catch (e) {
+      clearTimeout(setupTimer);
       throw classifyAiError(e);
     }
+    clearTimeout(setupTimer);
+
+    if (!res.ok || !res.body) {
+      if (res.ok && !res.body) {
+        throw new AiError("ai_empty", 502, true, "AI stream ended without text", {
+          detail: "no-body",
+        });
+      }
+      await throwForStatus("chat", res);
+    }
+
+    const sse = openSseStream(res, () => controller.abort());
 
     // First-chunk gate (F44): don't open the HTTP response until real text
-    // arrives. A stream that ends empty (the silent "Empty response" bug)
-    // or dies before the first token becomes a classified HTTP error here,
-    // with finishReason/blockReason captured for the log.
-    const iterator = streamResult.stream;
+    // arrives. A stream that ends empty or dies before the first token
+    // becomes a classified HTTP error here.
     let first = "";
-    let chunks = 0;
-    let lastFinish = "";
-    let blockReason = "";
-    for (;;) {
-      let next: IteratorResult<StreamChunk>;
-      try {
-        next = await withTimeout(iterator.next(), FIRST_TOKEN_TIMEOUT_MS, () => {
-          void iterator.return(undefined).catch(() => {});
-        });
-      } catch (e) {
-        throw classifyAiError(e);
+    try {
+      for (;;) {
+        let next: IteratorResult<string>;
+        try {
+          next = await withTimeout(sse.iterator.next(), FIRST_TOKEN_TIMEOUT_MS, () => {
+            sse.cancel();
+          });
+        } catch (e) {
+          throw classifyAiError(e);
+        }
+        if (next.done) break;
+        if (next.value) {
+          first = next.value;
+          break;
+        }
       }
-      if (next.done) break;
-      chunks += 1;
-      const value = next.value;
-      if (value.promptFeedback?.blockReason) blockReason = value.promptFeedback.blockReason;
-      const finish = value.candidates?.[0]?.finishReason ?? "";
-      if (finish) lastFinish = finish;
-      first = chunkText(value, finish);
-      if (first) break;
+    } catch (e) {
+      sse.cancel();
+      throw e;
     }
 
     if (!first) {
+      sse.cancel();
       throw new AiError("ai_empty", 502, true, "AI stream ended without text", {
-        detail: `chunks=${chunks} finish=${lastFinish || "-"} block=${blockReason || "-"}`,
+        detail: "no-text",
       });
     }
 
-    return streamFrom(iterator, first);
+    return streamFrom(sse.iterator, first, () => sse.cancel());
   });
 }

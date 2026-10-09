@@ -52,8 +52,8 @@ function hungarianMessage(code: string, retryAfterSec?: number): string | null {
         : "Túl sok kérés — próbáld újra pár másodperc múlva!";
     case "ai_quota":
       return ra
-        ? `A Gemini AI szolgáltatása átmenetileg túl van terhelve (kvóta) — próbáld újra ${ra} mp múlva!`
-        : "A Gemini AI szolgáltatása átmenetileg túl van terhelve (kvóta) — próbáld újra később!";
+        ? `A DeepSeek AI szolgáltatása átmenetileg túl van terhelve (kvóta) — próbáld újra ${ra} mp múlva!`
+        : "A DeepSeek AI szolgáltatása átmenetileg túl van terhelve (kvóta) — próbáld újra később!";
     case "ai_empty":
       return "Lumi nem adott választ — próbáld újra!";
     case "ai_unavailable":

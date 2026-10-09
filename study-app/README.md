@@ -16,7 +16,7 @@ The AI plays the persona of **Lumi** (meaning "light", from "lumen") — a frien
 
 - **Framework:** Next.js 16
 - **Styling:** Tailwind v4 (violet accent `#7c3aed`, no external component libraries)
-- **AI:** Gemini 3.5 Flash via @google/generative-ai SDK
+- **AI:** DeepSeek `deepseek-chat` via native fetch (OpenAI-compatible API)
 - **Database:** Supabase PostgreSQL with RLS on every table
 - **Auth:** Email + password with confirmation link (cookie-based sessions via `@supabase/ssr`)
 - **Client:** `createBrowserClient` (cookies), **Server:** `createServerClient` (cookies)
@@ -29,7 +29,7 @@ The AI plays the persona of **Lumi** (meaning "light", from "lumen") — a frien
 | UI language | Hungarian throughout |
 | Auth flow | Signup → confirmation email → /setup-profile (username + AI persona) → /dashboard |
 | Auth-aware header | Shows Belépés when logged out, ⚙️+Kijelentkezés when logged in; hidden on /login and /setup-profile |
-| AI provider | Gemini 3.5 Flash via @google/generative-ai SDK |
+| AI provider | DeepSeek `deepseek-chat` via native fetch (OpenAI-compatible API) |
 | AI persona | Lumi (friendly study partner, meaning "light" from "lumen") |
 | Subjects | Fixed set: Matematika, Történelem, Irodalom (global, read-only, with logo colors) |
 | Topics | Per-user CRUD inside a subject |
@@ -65,7 +65,7 @@ study-app/
 │   ├── topics/[topicId]/analyze/  — island-analysis progress page ("Lumi elemzi a tananyagot")
 │   └── settings/                  — Profile editing + account deletion
 ├── lib/
-│   ├── ai.ts                      — Single memoized Gemini client (completeJson, streamChat) — use for ALL AI calls
+│   ├── ai.ts                      — Single DeepSeek client (completeJson, streamChat) — use for ALL AI calls
 │   ├── api-auth.ts                — requireUser(): standard auth guard returning {supabase, user} or 401
 │   ├── chunks.ts                  — Text chunking + per-island retrieval (getIslandContext) for large documents
 │   ├── env.ts                     — requireEnv(): fail-fast missing-secret checks (server-only)
@@ -86,8 +86,9 @@ study-app/
 
 | Variable | Required for |
 |----------|-------------|
-| `GEMINI_API_KEY` | All AI features (island analysis, chat, quiz, evaluation) |
-| `GEMINI_MODEL` | Optional — overrides the Gemini model (default `gemini-3.5-flash-lite`, the free-tier pick from F49) |
+| `DEEPSEEK_API_KEY` | All AI features (island analysis, chat, quiz, evaluation) |
+| `DEEPSEEK_MODEL` | Optional — overrides the DeepSeek model (default `deepseek-chat`) |
+| `DEEPSEEK_BASE_URL` | Optional — overrides the API base URL (default `https://api.deepseek.com`) |
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase client (public) |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase client (public) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Account deletion (`DELETE /api/account`) — get from Supabase Dashboard > Project Settings > API |
@@ -96,10 +97,10 @@ study-app/
 
 Two main exports in `lib/ai.ts`:
 
-- **`completeJson(messages)`** — sends messages to Gemini, returns parsed JSON. Use for structured outputs (island analysis, evaluation, quiz content). Handles system message extraction, empty-contents fallback, `responseMimeType: "application/json"`.
+- **`completeJson(messages)`** — sends messages to DeepSeek, returns parsed JSON. Use for structured outputs (island analysis, evaluation, quiz content). Uses `response_format: { type: "json_object" }`.
 - **`streamChat(messages, systemPrompt)`** — returns a `ReadableStream` for real-time token output. Use for interactive chat.
 
-Routes must never instantiate `GoogleGenerativeAI` directly — `lib/ai.ts` owns the single memoized client. Quiz generation and attempt grading live in `lib/quiz-gen.ts` (`completeJson` + `isValidSubmission` / `gradeAttempt` / `scoreAttempt`); the old `/api/quiz/generate` + `/api/quiz/grade` endpoints were removed in F32.
+Routes must never call the DeepSeek API directly — `lib/ai.ts` owns the single client. Quiz generation and attempt grading live in `lib/quiz-gen.ts` (`completeJson` + `isValidSubmission` / `gradeAttempt` / `scoreAttempt`); the old `/api/quiz/generate` + `/api/quiz/grade` endpoints were removed in F32.
 
 Error handling: wrap `generateContent()` and `JSON.parse` in try/catch. Use `catch (e)` only when `e` is referenced in the handler body, otherwise use `catch { }` (no parameter).
 
@@ -228,7 +229,7 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 
 | Task | Components to Build | Status |
 |---|---|---|
-| **3.5 — Island analysis** | `/api/analyze` — analyzes study materials via Gemini 3.5 Flash, splits into logical islands with approach, key_concepts, probe_questions | ✅ |
+| **3.5 — Island analysis** | `/api/analyze` — analyzes study materials via DeepSeek, splits into logical islands with approach, key_concepts, probe_questions | ✅ |
 | | Islands stored as `__ISLANDS__:` message in session, parsed on resume | ✅ |
 | **4a — Learn page renderer** | `LearnPage` — page wrapper, island-driven content area, progress bar, back link, loading/error/empty states | ✅ |
 | | `AIBubble` — AI message card with avatar + name + streaming text (token-by-token) | ✅ |
@@ -240,7 +241,7 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 | **4b — Island phase manager** | `useSessionPhaseManager` hook — dynamic structure from island titles, resume support, phase badge shows current island title | ✅ |
 | **4c — Roadmap wiring** | Wire `ProgressRoadmap` to real session.checkpoint, show island titles below circles, "Kezdés"/"Folytatás" Link navigates to learn page | ✅ |
 | **4d — Session lifecycle** | API routes: create session, save checkpoints, resume existing session. Checkpoint saved after island's mini-quiz completed | ✅ |
-| **4e — AI context wiring** | Inject study materials + Lumi persona as system prompt via Gemini 3.5 Flash. Per-island phase instruction includes approach guide + key_concepts | ✅ |
+| **4e — AI context wiring** | Inject study materials + Lumi persona as system prompt via DeepSeek. Per-island phase instruction includes approach guide + key_concepts | ✅ |
 | **4f — Mini-quiz scoped generation** | `/api/quiz/generate` accepts `keyConcepts` + `questionCount` for island-scoped 6-question mini-quizzes (route removed in F32 — scoped generation now in `lib/quiz-gen.ts`) | ✅ |
 
 ---
@@ -306,9 +307,9 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 | `/topics/[topicId]/quiz`      | ❌     | Phase 3 — Standalone quiz (MCQ with instant feedback, score summary) |
 | `/settings`                   | ✅     | Profile editing, persona change, logout                       |
 | `/api/account`                | ✅     | DELETE — removes user's Storage files then auth user (cascade deletes all data). Requires `SUPABASE_SERVICE_ROLE_KEY` |
-| `/api/analyze`                | ✅     | POST — analyzes materials via Gemini 3.5 Flash, returns `Island[]` (title, approach, key_concepts, probe_questions) |
+| `/api/analyze`                | ✅     | POST — analyzes materials via DeepSeek, returns `Island[]` (title, approach, key_concepts, probe_questions) |
 | `/api/evaluate`               | ✅     | POST — AI verdicts for probe/teaching answers per concept (`correct|partial|wrong|missing|not_required`), updates `concept_mastery` |
-| `/api/chat`                   | ✅     | Gemini streaming with session context + study materials |
+| `/api/chat`                   | ✅     | DeepSeek streaming with session context + study materials |
 | `/api/sessions`               | ✅     | POST (create) + GET ?topic_id= (find latest in-progress)      |
 | `/api/sessions/[id]`          | ✅     | GET (session + messages)                                       |
 | `/api/sessions/[id]/checkpoint` | ✅   | PUT (update current_checkpoint)                                |
@@ -332,7 +333,7 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 - Mobile: static responsive audit done (F42) — no live cross-breakpoint device testing yet (Phase 4)
 - Account deletion requires `SUPABASE_SERVICE_ROLE_KEY` — missing key fails fast via `requireEnv` (logged server error, 500 to client)
 - `007_storage_cleanup.sql`'s pg_net trigger is dropped by `014_drop_storage_cleanup_trigger.sql` (pg_net unavailable on free plan) — storage files are deleted explicitly by `/api/materials/[id]` and `/api/account`
-- AI failure root cause **confirmed quota** (session 2026-10-02): project showed 5 RPM / 20 RPD on `gemini-3.5-flash` — a full learning session exceeds that easily. Decision: stay free → F49 swapped default to `gemini-3.5-flash-lite` (`GEMINI_MODEL` override), F48 stops auto-retrying 429s. Residual watch: if `[AI] fail code=ai_empty` appears after the swap, that's a separate non-quota bug to chase
+- AI is now DeepSeek (`deepseek-chat`, paid Cloud API) after F51 — the old Gemini free-tier quota root cause (5 RPM / 20 RPD on `gemini-3.5-flash`, session 2026-10-02) no longer applies; `ai_quota` now means DeepSeek rate/quota rejection and `ai_invalid` covers billing (HTTP 402) — top up credit instead of retrying
 
 ## Migration History
 
@@ -366,7 +367,7 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 28. **F32 — Dead code removal (−563 lines):** deleted unused routes `/api/quiz/generate`, `/api/quiz/grade`, `/api/topics`, `/api/subjects` and components `QuizQuestion`, `CompletionScreen`; trimmed `useSessionPhaseManager`/`QuizRunner` accordingly.
 29. **F33 — Shared AI modules:** `app/lib/stream.ts` (`streamAIResponse` retry/stream/save loop), `app/lib/teaching.ts` (teach/probe response builders), `app/lib/prompts.ts` — single source for Lumi prompt text.
 30. **F34-F36 — Learn page decomposition:** `loadLearnContext.ts` (resume/restore loader, discriminated result), `useSessionSaves.ts`, `useIslandFlow.ts` (all state + handlers/effects); page reduced 1088 → 378 lines (load layer + JSX only).
-31. **F37 — API auth/dedupe hardening:** `lib/api-auth.ts` `requireUser()` standardizes auth in all 14 routes (uniform 401 JSON), `lib/plan.ts` `validatePlan` guards quiz routes, single memoized Gemini client (`lib/ai.ts`), shared attempt grading (`lib/quiz-gen.ts`), `buildSystemPrompt` takes the request's client (second client removed).
+31. **F37 — API auth/dedupe hardening:** `lib/api-auth.ts` `requireUser()` standardizes auth in all 14 routes (uniform 401 JSON), `lib/plan.ts` `validatePlan` guards quiz routes, single AI client (`lib/ai.ts`), shared attempt grading (`lib/quiz-gen.ts`), `buildSystemPrompt` takes the request's client (second client removed).
 32. **F38 — Migration 014:** dropped `trg_cleanup_storage_on_delete` + `cleanup_storage_on_delete()` + `app_secrets` (pg_net unavailable on free plan); storage cleanup now explicit in API routes.
 33. **F39 — Defense hardening:** security headers in `next.config.ts` (nosniff, X-Frame-Options DENY, Referrer-Policy, Permissions-Policy); bounded JSON bodies via `lib/http.ts` (1 MB → 413, streaming byte budget) on all 11 JSON routes + multipart size gate; `lib/env.ts` `requireEnv` fail-fast for GEMINI_API_KEY/Supabase vars; Supabase `error.message` never leaks to clients (generic Hungarian/English 500s, details in server logs).
 34. **F40 — Rate limiting:** `lib/rate-limit.ts` in-memory fixed-window, per-user, wired into all 7 AI-cost routes (`analyze` 10/h, `chat` 30/min, `evaluate` 30/min, island/topic quiz 10/h, both attempts 20/h) → 429 + `Retry-After`.
@@ -378,6 +379,7 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 40. **F48 — Quota-preserving retries:** `aiRetry` throws `ai_quota` immediately unless Retry-After ≤5 s (no more blind 1 s/2.5 s retries burning the 20/day free budget); client removed `ai_quota` from `RETRYABLE_CODES` — the Hungarian quota panel shows on the first 429, manual "Újra" is the only retry.
 41. **F49 — Free-tier model pick:** default model `gemini-3.5-flash` (project quota 5 RPM / 20 RPD) → `gemini-3.5-flash-lite`, overridable via `GEMINI_MODEL` env; env table updated. Root cause of the "AI doesn't respond" reports: free-tier quota exhaustion.
 42. **F50 — README sync:** Known Issues updated with the confirmed quota root cause and stay-free decision; changelog entries 40-41 added.
+43. **F51 — DeepSeek migration:** replaced `@google/generative-ai` (Gemini 3.5 Flash-Lite) with DeepSeek Cloud (`deepseek-chat`, OpenAI-compatible `POST /chat/completions` via native fetch — no SDK). `lib/ai.ts` rewritten: `completeJson` uses `response_format: { type: "json_object" }` (native system role, no message remapping), `streamChat` parses SSE `delta.content` with the F44 first-token gate kept; error classification remapped (429 → `ai_quota`, 402 billing → `ai_invalid`, refusals → `ai_blocked`); `aiRetry`/`aiErrorResponse`/log format unchanged so all 7 AI routes moved with zero logic changes. Env `GEMINI_API_KEY`/`GEMINI_MODEL` → `DEEPSEEK_API_KEY`/`DEEPSEEK_MODEL` (+ optional `DEEPSEEK_BASE_URL`). Note: DeepSeek is paid — `ai_invalid` with `upstream 402` means top up credit.
 
 ## Getting Started
 
