@@ -1,0 +1,2 @@
+# Git hook scripts run under sh: they must stay LF or sh chokes on CR.
+.husky/* text eol=lf

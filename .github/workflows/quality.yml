@@ -1,0 +1,65 @@
+# Fully enforced quality gate: commit format + build + lint + test.
+# Hermetic by design — no secrets, no live API calls.
+name: quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: study-app
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: study-app/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Commit message format
+        # Pushes and PRs alike: every new commit must match F<N>: <summary>.
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            RANGE="origin/${{ github.base_ref }}...HEAD"
+          elif [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            RANGE="HEAD"
+          else
+            RANGE="${{ github.event.before }}...${{ github.sha }}"
+          fi
+          echo "Checking messages in $RANGE"
+          BAD=$(git log --format=%s "$RANGE" | grep -Ev '^F[0-9]+: .+' || true)
+          if [ -n "$BAD" ]; then
+            echo "Non-conforming commit messages:"
+            printf '%s\n' "$BAD"
+            exit 1
+          fi
+
+      - name: Build
+        # Static prerender evaluates the Supabase browser client at module
+        # scope, so placeholder public vars are required. Compile-only:
+        # CI artifacts are never deployed, and no secret is needed.
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-placeholder-key
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm run test

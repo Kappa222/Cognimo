@@ -1,0 +1,6 @@
+# Repo convention: F<N>: <english summary> (e.g. F53: Add unit tests).
+if ! grep -Eq '^F[0-9]+: .+' "$1"; then
+  echo "commit-msg: message must match 'F<N>: <english summary>'."
+  echo "Got: $(head -n 1 "$1")"
+  exit 1
+fi

@@ -1,0 +1,16 @@
+# Fast half of the quality gate: lint staged files, full unit suite, secret guard.
+# Runs from the repo root; the app lives in study-app/.
+STAGED=$(git diff --cached --name-only --diff-filter=ACM) || exit 1
+
+# Block accidental secret commits (belt-and-suspenders over .gitignore —
+# a real DEEPSEEK_API_KEY lives in study-app/.env.local).
+BAD=$(printf '%s\n' "$STAGED" | grep -E '(^|/)\.env(\.|$)' || true)
+if [ -n "$BAD" ]; then
+  echo "pre-commit: refusing to commit secret files:"
+  printf '%s\n' "$BAD"
+  exit 1
+fi
+
+cd study-app || exit 1
+npx lint-staged || exit 1
+npx vitest run || exit 1

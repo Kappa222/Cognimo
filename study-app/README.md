@@ -4,9 +4,11 @@
 
 <!-- AI: Workspace root — C:\Users\adam.kovacs\Cognimo\study-app\ -->
 <!-- AI: Commit format — F<N>: <english summary> where N is a sequential counter (e.g. F6, F7). Commit after every completed sub-task. Each commit should be self-contained. -->
-<!-- AI: Quality gate — before every commit, run `npm run build && npm run lint && npm run test`. Never commit if any fails. -->
+<!-- AI: Quality gate — enforced by Husky hooks locally (pre-commit: lint-staged + tests; pre-push: full gate) and GitHub Actions on push/PR. Emergency bypass: --no-verify (visible in history). -->
 
 # Cognimo
+
+[![quality](https://github.com/Kappa222/Cognimo/actions/workflows/quality.yml/badge.svg)](https://github.com/Kappa222/Cognimo/actions/workflows/quality.yml)
 
 Hungarian-language AI-powered learning platform featuring multiple learning methods, including the **Inverted Teacher** method (you learn by teaching).
 
@@ -45,13 +47,27 @@ The AI plays the persona of **Lumi** (meaning "light", from "lumen") — a frien
 | User avatar | Male / female flat SVG (no labels), chosen on signup, changeable in /settings, stored in `profiles.avatar_url` |
 | Learning partner | Lumi — single character with dedicated avatar |
 | Roadmap UI | Horizontal island-based progress roadmap (N islands = AI-generated sections) with left/right arrow nav; user avatar stands on current island, island titles shown below circles |
-| Quality gate | Run `npm run build && npm run lint && npm run test` before every commit — catches type errors, lint violations, compilation failures, and unit regressions. Full E2E + component testing planned in Phase 5 |
+| Quality gate | `npm run gate` (= `build && lint && test`), enforced on three layers — see below. Catches type errors, lint violations, compilation failures, and unit regressions. Full E2E + component testing planned in Phase 5 |
 | UI text language | Hungarian throughout (prompts, button labels, error messages) |
 | Code comments | English only |
 | Component structure | Functional components with TypeScript, explicit prop interfaces, no `any` |
 | Styling | Tailwind v4, `rounded-2xl border-zinc-200/60 bg-white shadow-sm` cards, `cursor-pointer` buttons with hover lift + click press |
 | Migration naming | `supabase/migrations/0XX_<description>.sql` — incrementing 3-digit prefix |
 | API security | `requireUser()` auth guard on every route, 1 MB JSON body cap (`lib/http.ts`), per-user rate limits on AI-cost routes (`lib/rate-limit.ts` → 429), security headers in `next.config.ts` |
+
+### Quality Gate Enforcement
+
+Three layers, same checks (Hermetic — no secrets, no live API calls):
+
+| Layer | Trigger | Runs |
+|---|---|---|
+| `pre-commit` hook | Every `git commit` | `lint-staged` (eslint on staged `*.ts/*.tsx`), full `vitest run` (~2 s), staged-`.env*` guard |
+| `pre-push` hook | Every `git push` | `npm run gate` (build + lint + test) |
+| GitHub Actions (`quality.yml`) | Push/PR on `main` | F<N> message check on new commits, `npm ci`, build, lint, test (Node 24) |
+
+Plus `commit-msg` hook: every message must match `F<N>: <english summary>`.
+
+Hooks install automatically via `npm install` (`prepare` → Husky, hooks live in repo-root `.husky/`, LF-pinned by `.gitattributes`). Emergency bypass is `git commit --no-verify` / push `--no-push-verify` — use only to unblock, the gap stays visible until CI-equivalent verification lands.
 
 ### Directory Layout
 
@@ -382,6 +398,7 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 42. **F50 — README sync:** Known Issues updated with the confirmed quota root cause and stay-free decision; changelog entries 40-41 added.
 43. **F51 — DeepSeek migration:** replaced `@google/generative-ai` (Gemini 3.5 Flash-Lite) with DeepSeek Cloud (`deepseek-chat`, OpenAI-compatible `POST /chat/completions` via native fetch — no SDK). `lib/ai.ts` rewritten: `completeJson` uses `response_format: { type: "json_object" }` (native system role, no message remapping), `streamChat` parses SSE `delta.content` with the F44 first-token gate kept; error classification remapped (429 → `ai_quota`, 402 billing → `ai_invalid`, refusals → `ai_blocked`); `aiRetry`/`aiErrorResponse`/log format unchanged so all 7 AI routes moved with zero logic changes. Env `GEMINI_API_KEY`/`GEMINI_MODEL` → `DEEPSEEK_API_KEY`/`DEEPSEEK_MODEL` (+ optional `DEEPSEEK_BASE_URL`). Note: DeepSeek is paid — `ai_invalid` with `upstream 402` means top up credit.
 44. **F52 — Wave-1 unit tests:** Vitest 3 (`npm run test`, node env, `vitest.config.ts`), 68 tests colocated as `*.test.ts`: pure-function suites for `plan` / `quiz-gen` scoring / `chunks` / `http` / `rate-limit` / `aiErrors`, plus mocked-fetch suites for `lib/ai.ts` (error classification table, `aiRetry` quota/exhaustion rules with fake timers, `completeJson` contract + failure paths, `streamChat` assembly/empty/timeout). Quality gate extended to `build && lint && test`.
+45. **F53 — Enforced quality gate:** Husky hooks (repo-root `.husky/`, LF-pinned) — `pre-commit` runs lint-staged + full Vitest + staged-`.env*` guard, `pre-push` runs `npm run gate`, `commit-msg` enforces `F<N>:` format; GitHub Actions `quality.yml` repeats message check + `npm ci` + build/lint/test on Node 24 for every push/PR to `main`. Single `gate` script, hermetic (no secrets, no live API).
 
 ## Getting Started
 
