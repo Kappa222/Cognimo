@@ -4,7 +4,7 @@
 
 <!-- AI: Workspace root — C:\Users\adam.kovacs\Cognimo\study-app\ -->
 <!-- AI: Commit format — F<N>: <english summary> where N is a sequential counter (e.g. F6, F7). Commit after every completed sub-task. Each commit should be self-contained. -->
-<!-- AI: Quality gate — before every commit, run `npm run build && npm run lint`. Never commit if either fails. -->
+<!-- AI: Quality gate — before every commit, run `npm run build && npm run lint && npm run test`. Never commit if any fails. -->
 
 # Cognimo
 
@@ -45,7 +45,7 @@ The AI plays the persona of **Lumi** (meaning "light", from "lumen") — a frien
 | User avatar | Male / female flat SVG (no labels), chosen on signup, changeable in /settings, stored in `profiles.avatar_url` |
 | Learning partner | Lumi — single character with dedicated avatar |
 | Roadmap UI | Horizontal island-based progress roadmap (N islands = AI-generated sections) with left/right arrow nav; user avatar stands on current island, island titles shown below circles |
-| Quality gate | Run `npm run build && npm run lint` before every commit — catches type errors, lint violations, and compilation failures. Full E2E + component testing planned in Phase 5 |
+| Quality gate | Run `npm run build && npm run lint && npm run test` before every commit — catches type errors, lint violations, compilation failures, and unit regressions. Full E2E + component testing planned in Phase 5 |
 | UI text language | Hungarian throughout (prompts, button labels, error messages) |
 | Code comments | English only |
 | Component structure | Functional components with TypeScript, explicit prop interfaces, no `any` |
@@ -283,6 +283,7 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 
 ### 🏗️ Phase 5 — Quality & Deploy (No new UI)
 
+- Unit testing ✅ (Vitest, `npm run test`: pure-function tests for plan/quiz-gen/chunks/http/rate-limit/aiErrors + mocked-fetch tests for `lib/ai.ts` classification, retry, JSON and streaming)
 - E2E testing (signup → setup → topic → materials → learn → quiz)
 - Component testing (AIBubble, QuizQuestion, ConfirmModal, ProgressRoadmap)
 - Error monitoring (AI API failures, storage upload errors)
@@ -380,6 +381,7 @@ All tables have RLS enabled. Auto-`user_id` trigger on user-owned tables via `se
 41. **F49 — Free-tier model pick:** default model `gemini-3.5-flash` (project quota 5 RPM / 20 RPD) → `gemini-3.5-flash-lite`, overridable via `GEMINI_MODEL` env; env table updated. Root cause of the "AI doesn't respond" reports: free-tier quota exhaustion.
 42. **F50 — README sync:** Known Issues updated with the confirmed quota root cause and stay-free decision; changelog entries 40-41 added.
 43. **F51 — DeepSeek migration:** replaced `@google/generative-ai` (Gemini 3.5 Flash-Lite) with DeepSeek Cloud (`deepseek-chat`, OpenAI-compatible `POST /chat/completions` via native fetch — no SDK). `lib/ai.ts` rewritten: `completeJson` uses `response_format: { type: "json_object" }` (native system role, no message remapping), `streamChat` parses SSE `delta.content` with the F44 first-token gate kept; error classification remapped (429 → `ai_quota`, 402 billing → `ai_invalid`, refusals → `ai_blocked`); `aiRetry`/`aiErrorResponse`/log format unchanged so all 7 AI routes moved with zero logic changes. Env `GEMINI_API_KEY`/`GEMINI_MODEL` → `DEEPSEEK_API_KEY`/`DEEPSEEK_MODEL` (+ optional `DEEPSEEK_BASE_URL`). Note: DeepSeek is paid — `ai_invalid` with `upstream 402` means top up credit.
+44. **F52 — Wave-1 unit tests:** Vitest 3 (`npm run test`, node env, `vitest.config.ts`), 68 tests colocated as `*.test.ts`: pure-function suites for `plan` / `quiz-gen` scoring / `chunks` / `http` / `rate-limit` / `aiErrors`, plus mocked-fetch suites for `lib/ai.ts` (error classification table, `aiRetry` quota/exhaustion rules with fake timers, `completeJson` contract + failure paths, `streamChat` assembly/empty/timeout). Quality gate extended to `build && lint && test`.
 
 ## Getting Started
 
